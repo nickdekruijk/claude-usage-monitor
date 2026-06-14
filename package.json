@@ -2,7 +2,7 @@
   "name": "claude-code-usage-tracker",
   "displayName": "Claude Code Usage Tracker",
   "description": "Real-time monitoring of Claude Code token usage, cost tracking, and session management",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "YahyaShareef",
   "icon": "resources/icon.png",
   "repository": {
@@ -81,7 +81,21 @@
             "Color the status bar by whichever window's utilization is higher (default)"
           ],
           "default": "max",
-          "description": "Which window's utilization drives the status bar background color (≥60% warning, ≥80% error)."
+          "description": "Which window's utilization drives the status bar background color."
+        },
+        "claude-usage-monitor.warningThreshold": {
+          "type": "number",
+          "default": 60,
+          "minimum": 1,
+          "maximum": 99,
+          "description": "Utilization percentage at which the status bar turns orange (warning)."
+        },
+        "claude-usage-monitor.errorThreshold": {
+          "type": "number",
+          "default": 80,
+          "minimum": 1,
+          "maximum": 100,
+          "description": "Utilization percentage at which the status bar turns red (error)."
         }
       }
     },

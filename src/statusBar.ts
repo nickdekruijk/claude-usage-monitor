@@ -5,15 +5,19 @@ type StatusBarMode = '5h' | '7d' | 'both';
 type ColorSource   = '5h' | '7d' | 'max';
 
 interface StatusBarConfig {
-	mode:        StatusBarMode;
-	colorSource: ColorSource;
+	mode:             StatusBarMode;
+	colorSource:      ColorSource;
+	warningThreshold: number;
+	errorThreshold:   number;
 }
 
 function readConfig(): StatusBarConfig {
 	const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
 	return {
-		mode:        cfg.get<StatusBarMode>('statusBar', '5h'),
-		colorSource: cfg.get<ColorSource>('statusBarColorFrom', 'max'),
+		mode:             cfg.get<StatusBarMode>('statusBar', '5h'),
+		colorSource:      cfg.get<ColorSource>('statusBarColorFrom', 'max'),
+		warningThreshold: cfg.get<number>('warningThreshold', 60),
+		errorThreshold:   cfg.get<number>('errorThreshold', 80),
 	};
 }
 
@@ -37,9 +41,9 @@ function formatTimeRemaining(resetsAt: string): string {
 	return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
-function utilizationColor(pct: number): vscode.ThemeColor | undefined {
-	if (pct >= 80) { return new vscode.ThemeColor('statusBarItem.errorBackground'); }
-	if (pct >= 60) { return new vscode.ThemeColor('statusBarItem.warningBackground'); }
+function utilizationColor(pct: number, warnT: number, errT: number): vscode.ThemeColor | undefined {
+	if (pct >= errT)  { return new vscode.ThemeColor('statusBarItem.errorBackground'); }
+	if (pct >= warnT) { return new vscode.ThemeColor('statusBarItem.warningBackground'); }
 	return undefined;
 }
 
@@ -94,7 +98,9 @@ export class StatusBarManager {
 		this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
 			if (
 				e.affectsConfiguration('claude-usage-monitor.statusBar') ||
-				e.affectsConfiguration('claude-usage-monitor.statusBarColorFrom')
+				e.affectsConfiguration('claude-usage-monitor.statusBarColorFrom') ||
+				e.affectsConfiguration('claude-usage-monitor.warningThreshold') ||
+				e.affectsConfiguration('claude-usage-monitor.errorThreshold')
 			) {
 				if (this.lastData) {
 					this.update(this.lastData, this.lastError);
@@ -115,7 +121,7 @@ export class StatusBarManager {
 			return;
 		}
 
-		const { mode, colorSource } = readConfig();
+		const { mode, colorSource, warningThreshold, errorThreshold } = readConfig();
 		const sd = data.sevenDay;
 		const eu = data.extraUsage;
 
@@ -124,11 +130,11 @@ export class StatusBarManager {
 		const colorPct = pickColorPct(colorSource, fh, sd);
 		this.item.backgroundColor = error
 			? new vscode.ThemeColor('statusBarItem.warningBackground')
-			: utilizationColor(colorPct);
+			: utilizationColor(colorPct, warningThreshold, errorThreshold);
 
 		const bar = (p: number) => {
 			const filled = Math.round(Math.min(p, 100) / 10);
-			const color  = p >= 80 ? '🔴' : p >= 60 ? '🟡' : '🟢';
+			const color  = p >= errorThreshold ? '🔴' : p >= warningThreshold ? '🟡' : '🟢';
 			return `[${('█'.repeat(filled)).padEnd(10, '—')}] ${p.toFixed(0)}% ${color}`;
 		};
 
