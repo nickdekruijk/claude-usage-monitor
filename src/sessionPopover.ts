@@ -123,7 +123,11 @@ function severityColor(severity: string | null): string | null {
 
 function limitRow(l: UsageLimit, warnT: number, errT: number): string {
   const pct = l.percent;
-  const color = severityColor(l.severity) ?? barColor(pct, warnT, errT);
+  // Severity can only escalate past the thresholds, never downgrade them
+  const rank = (c: string) => c === "#ff6b6b" ? 2 : c === "#ffd93d" ? 1 : 0;
+  const tColor = barColor(pct, warnT, errT);
+  const sColor = severityColor(l.severity);
+  const color = sColor && rank(sColor) > rank(tColor) ? sColor : tColor;
   const meta = l.resetsAt
     ? `<span>Resets in ${formatTimeRemaining(l.resetsAt)}</span><span>${formatResetDate(l.resetsAt)}</span>`
     : `<span></span><span></span>`;
