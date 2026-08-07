@@ -2,7 +2,7 @@
 
 A VS Code extension that shows your real-time Claude Code quota usage directly in the status bar — powered by the official Anthropic OAuth usage API.
 
-![Full screen overview](https://raw.githubusercontent.com/yahyashareef48/claude-usage-monitor/refs/heads/master/resources/image1.png)
+![Full screen overview](resources/image1.png)
 
 ## How It Works
 
@@ -17,7 +17,7 @@ The extension authenticates using the OAuth token that Claude Code already store
 
 ## Status Bar
 
-![Status bar chip](https://raw.githubusercontent.com/yahyashareef48/claude-usage-monitor/refs/heads/master/resources/image2.png)
+![Status bar chip](resources/image2.png)
 
 ```
 ☁ 69% · 2h 14m
@@ -34,13 +34,13 @@ Colors:
 
 ## Usage Panel
 
-![Usage detail panel](https://raw.githubusercontent.com/yahyashareef48/claude-usage-monitor/refs/heads/master/resources/image3.png)
+![Usage detail panel](resources/image3.png)
 
 Click the status bar item (or run **Claude: Show Usage** from the Command Palette) to open a panel showing:
 
 - **5-Hour Window** — your primary rolling quota with a progress bar and reset time
-- **7-Day Window** — weekly quota utilization
-- **7-Day Sonnet / Opus** — model-specific weekly quotas (when applicable)
+- **7-Day All Models** — weekly quota utilization
+- **Per-model weekly windows** — one bar per model limit the API reports (e.g. **7-Day Fable**), parsed generically so new model tiers show up automatically
 - **Extra Usage** — pay-as-you-go credits spent this month (when enabled)
 
 ## Commands
