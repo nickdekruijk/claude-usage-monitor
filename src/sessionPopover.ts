@@ -149,6 +149,32 @@ export function sortLimits(limits: UsageLimit[]): UsageLimit[] {
   return [...limits].sort((a, b) => rank(a) - rank(b));
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * <option> tags for each per-model window the API reports, for the status bar
+ * Display / Color-from dropdowns. If the current setting names a model that is
+ * no longer reported, keep it listed (and selected) instead of clobbering it.
+ */
+function modelOptions(limits: UsageLimit[], current: string): string {
+  const models = limits.filter((l) => l.modelName !== null);
+  const cur = current.toLowerCase();
+  let html = models.map((l) => {
+    const value = `model:${l.modelName}`;
+    const selected = cur === value.toLowerCase() ? " selected" : "";
+    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(limitLabel(l))}</option>`;
+  }).join("");
+  if (cur.startsWith("model:")) {
+    const name = current.slice("model:".length);
+    if (!models.some((l) => l.modelName!.toLowerCase() === name.toLowerCase())) {
+      html += `<option value="${escapeHtml(current)}" selected>${escapeHtml(name)} (not currently reported)</option>`;
+    }
+  }
+  return html;
+}
+
 function readPanelConfig() {
   const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
   return {
@@ -221,19 +247,21 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
 	<div class="settings-group">
 		<div class="settings-group-title">Status Bar</div>
 		<div class="setting-row">
-			<span class="setting-label">Display <span class="info-icon" title="Which quota window to show in the status bar text. '5h' shows the 5-hour countdown and reset time, '7d' shows the 7-day window, 'both' shows both.">ⓘ</span></span>
+			<span class="setting-label">Display <span class="info-icon" title="Which quota window to show in the status bar text. '5h' shows the 5-hour countdown and reset time, '7d' shows the 7-day window, 'both' shows both. Per-model entries pin that model's weekly window (e.g. Fable).">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBar', this.value)">
 				<option value="5h"${sel(statusBar, '5h')}>5-Hour window</option>
 				<option value="7d"${sel(statusBar, '7d')}>7-Day window</option>
 				<option value="both"${sel(statusBar, 'both')}>Both windows</option>
+				${modelOptions(limits, statusBar)}
 			</select>
 		</div>
 		<div class="setting-row">
-			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of both' turns orange/red when either window hits a threshold — not just one.">ⓘ</span></span>
+			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of all windows' turns orange/red when any window — including per-model ones — hits a threshold.">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBarColorFrom', this.value)">
 				<option value="5h"${sel(colorFrom, '5h')}>5-Hour window</option>
 				<option value="7d"${sel(colorFrom, '7d')}>7-Day window</option>
-				<option value="max"${sel(colorFrom, 'max')}>Highest of both</option>
+				<option value="max"${sel(colorFrom, 'max')}>Highest of all windows</option>
+				${modelOptions(limits, colorFrom)}
 			</select>
 		</div>
 	</div>

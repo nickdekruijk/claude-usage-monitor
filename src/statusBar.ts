@@ -3,11 +3,12 @@ import { QuotaBucket, UsageData } from './types';
 import { limitLabel, sortLimits } from './sessionPopover';
 
 type StatusBarMode = '5h' | '7d' | 'both';
-type ColorSource   = '5h' | '7d' | 'max';
 
+// Settings accept '5h' | '7d' | 'both'/'max' | 'model:<display name>' —
+// model values are matched at runtime against the API's limits array.
 interface StatusBarConfig {
-	mode:             StatusBarMode;
-	colorSource:      ColorSource;
+	mode:             string;
+	colorSource:      string;
 	warningThreshold: number;
 	errorThreshold:   number;
 }
@@ -15,11 +16,25 @@ interface StatusBarConfig {
 function readConfig(): StatusBarConfig {
 	const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
 	return {
-		mode:             cfg.get<StatusBarMode>('statusBar', '5h'),
-		colorSource:      cfg.get<ColorSource>('statusBarColorFrom', 'max'),
+		mode:             cfg.get<string>('statusBar', '5h'),
+		colorSource:      cfg.get<string>('statusBarColorFrom', 'max'),
 		warningThreshold: cfg.get<number>('warningThreshold', 60),
 		errorThreshold:   cfg.get<number>('errorThreshold', 80),
 	};
+}
+
+/** 'model:Fable' → 'Fable', anything else → null */
+function parseModelValue(value: string): string | null {
+	return value.startsWith('model:') && value.length > 'model:'.length
+		? value.slice('model:'.length)
+		: null;
+}
+
+function findModelLimit(data: UsageData, name: string) {
+	const lower = name.toLowerCase();
+	return (data.limits ?? []).find(
+		(l) => l.modelName !== null && l.modelName.toLowerCase() === lower
+	) ?? null;
 }
 
 function timeAgo(date: Date): string {
@@ -49,14 +64,26 @@ function utilizationColor(pct: number, warnT: number, errT: number): vscode.Them
 }
 
 function pickColorPct(
-	colorSource: ColorSource,
+	colorSource: string,
+	data: UsageData,
 	fh: QuotaBucket,
 	sd: QuotaBucket | null,
 ): number {
+	const modelName = parseModelValue(colorSource);
+	if (modelName) {
+		const l = findModelLimit(data, modelName);
+		if (l) { return l.percent; }
+		// model not reported → fall through to 'max'
+	}
 	switch (colorSource) {
-		case '5h':  return fh.utilization;
-		case '7d':  return sd ? sd.utilization : fh.utilization;
-		case 'max': return sd ? Math.max(fh.utilization, sd.utilization) : fh.utilization;
+		case '5h': return fh.utilization;
+		case '7d': return sd ? sd.utilization : fh.utilization;
+		default: { // 'max' (or unresolvable value): highest of all windows, per-model included
+			const pcts = [fh.utilization];
+			if (sd) { pcts.push(sd.utilization); }
+			for (const l of data.limits ?? []) { pcts.push(l.percent); }
+			return Math.max(...pcts);
+		}
 	}
 }
 
@@ -126,9 +153,19 @@ export class StatusBarManager {
 		const sd = data.sevenDay;
 		const eu = data.extraUsage;
 
-		this.item.text = renderText(mode, fh, sd, !!error);
+		const modelName  = parseModelValue(mode);
+		const modelLimit = modelName ? findModelLimit(data, modelName) : null;
+		if (modelLimit) {
+			const suffix = error ? ' $(warning)' : '';
+			const time = modelLimit.resetsAt ? ` · ${formatTimeRemaining(modelLimit.resetsAt)}` : '';
+			this.item.text = `$(claude-icon) ${modelLimit.modelName} ${modelLimit.percent.toFixed(0)}%${time}${suffix}`;
+		} else {
+			// '5h' | '7d' | 'both', or a model value the API no longer reports → default to '5h'
+			const baseMode: StatusBarMode = mode === '7d' || mode === 'both' ? mode : '5h';
+			this.item.text = renderText(baseMode, fh, sd, !!error);
+		}
 
-		const colorPct = pickColorPct(colorSource, fh, sd);
+		const colorPct = pickColorPct(colorSource, data, fh, sd);
 		this.item.backgroundColor = error
 			? new vscode.ThemeColor('statusBarItem.warningBackground')
 			: utilizationColor(colorPct, warningThreshold, errorThreshold);
