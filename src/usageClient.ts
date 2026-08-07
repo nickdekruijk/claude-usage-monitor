@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as https from 'https';
 import { execSync } from 'child_process';
-import { UsageData } from './types';
+import { QuotaBucket, UsageData, UsageLimit } from './types';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
@@ -80,6 +80,45 @@ function parseQuotaBucket(raw: { utilization: number; resets_at: string } | null
 	return { utilization: raw.utilization, resetsAt: raw.resets_at };
 }
 
+/**
+ * Parse the newer `limits` array generically — no hardcoded model names.
+ * Skips malformed entries instead of throwing so one bad entry can't blank
+ * every bar. Note: entries are rendered regardless of `is_active` (the
+ * scoped per-model entries report is_active: false while still meaningful).
+ */
+function parseLimits(raw: unknown): UsageLimit[] {
+	if (!Array.isArray(raw)) { return []; }
+	const limits: UsageLimit[] = [];
+	for (const e of raw) {
+		if (!e || typeof e !== 'object') { continue; }
+		const entry = e as Record<string, unknown>;
+		if (typeof entry.percent !== 'number' || !isFinite(entry.percent)) { continue; }
+		const scope = (entry.scope ?? null) as { model?: { display_name?: unknown }; surface?: unknown } | null;
+		limits.push({
+			kind:      typeof entry.kind === 'string' ? entry.kind : 'unknown',
+			group:     typeof entry.group === 'string' ? entry.group : null,
+			percent:   entry.percent,
+			severity:  typeof entry.severity === 'string' ? entry.severity : null,
+			resetsAt:  typeof entry.resets_at === 'string' && entry.resets_at ? entry.resets_at : null,
+			isActive:  entry.is_active === true,
+			modelName: typeof scope?.model?.display_name === 'string' ? scope.model.display_name : null,
+			surface:   typeof scope?.surface === 'string' ? scope.surface : null,
+		});
+	}
+	return limits;
+}
+
+/**
+ * Backward-compat shim: on accounts where a legacy window field is null but
+ * the equivalent `limits` entry exists, synthesize a QuotaBucket from it so
+ * the status bar (which reads fiveHour/sevenDay) keeps working.
+ */
+function bucketFromLimit(limits: UsageLimit[], kind: string): QuotaBucket | null {
+	const l = limits.find((x) => x.kind === kind && x.resetsAt !== null && x.modelName === null);
+	if (!l) { return null; }
+	return { utilization: l.percent, resetsAt: l.resetsAt! };
+}
+
 export async function fetchUsageData(): Promise<UsageData> {
 	const token = readAccessToken();
 	if (!token) {
@@ -118,12 +157,15 @@ export async function fetchUsageData(): Promise<UsageData> {
 		throw new Error(`API error: ${raw.error?.message ?? JSON.stringify(raw.error)}`);
 	}
 
+	const limits = parseLimits(raw.limits);
+
 	return {
-		fiveHour: parseQuotaBucket(raw.five_hour),
-		sevenDay: parseQuotaBucket(raw.seven_day),
+		fiveHour: parseQuotaBucket(raw.five_hour) ?? bucketFromLimit(limits, 'session'),
+		sevenDay: parseQuotaBucket(raw.seven_day) ?? bucketFromLimit(limits, 'weekly_all'),
 		sevenDaySonnet: parseQuotaBucket(raw.seven_day_sonnet),
 		sevenDayOpus: parseQuotaBucket(raw.seven_day_opus),
 		sevenDayOauthApps: parseQuotaBucket(raw.seven_day_oauth_apps),
+		limits,
 		extraUsage: raw.extra_usage
 			? {
 				isEnabled: raw.extra_usage.is_enabled ?? false,

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { QuotaBucket, UsageData } from './types';
+import { limitLabel, sortLimits } from './sessionPopover';
 
 type StatusBarMode = '5h' | '7d' | 'both';
 type ColorSource   = '5h' | '7d' | 'max';
@@ -152,6 +153,13 @@ export class StatusBarManager {
 				`\`${bar(sd.utilization)}\``,
 				`↻ Resets in **${formatTimeRemaining(sd.resetsAt)}**`,
 			);
+		}
+
+		// Scoped per-model windows from the newer `limits` array (e.g. 7-Day Fable)
+		for (const l of sortLimits(data.limits ?? [])) {
+			if (l.modelName) {
+				lines.push(`**${limitLabel(l)}** \`${bar(l.percent)}\``);
+			}
 		}
 
 		if (data.sevenDaySonnet) {
