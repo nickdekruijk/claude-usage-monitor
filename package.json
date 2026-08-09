@@ -2,7 +2,7 @@
   "name": "claude-code-usage-tracker",
   "displayName": "Claude Code Usage Tracker",
   "description": "Real-time monitoring of Claude Code token usage, cost tracking, and session management",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "publisher": "YahyaShareef",
   "icon": "resources/icon.png",
   "repository": {
@@ -55,33 +55,17 @@
         },
         "claude-usage-monitor.statusBar": {
           "type": "string",
-          "enum": [
-            "5h",
-            "7d",
-            "both"
-          ],
-          "enumDescriptions": [
-            "Show 5-hour window utilization and reset countdown (default)",
-            "Show 7-day window utilization and reset countdown",
-            "Show both windows; countdown follows the 5-hour reset"
-          ],
+          "pattern": "^(5h|7d|both|model:.+)$",
+          "patternErrorMessage": "Use '5h', '7d', 'both', or 'model:<display name>' (e.g. 'model:Fable').",
           "default": "5h",
-          "description": "Which quota windows to display in the status bar text."
+          "markdownDescription": "Which quota window to show in the status bar text: `5h`, `7d`, `both`, or `model:<display name>` (e.g. `model:Fable`) for a per-model weekly window. The usage panel's Settings section lists the models your account currently reports."
         },
         "claude-usage-monitor.statusBarColorFrom": {
           "type": "string",
-          "enum": [
-            "5h",
-            "7d",
-            "max"
-          ],
-          "enumDescriptions": [
-            "Color the status bar by the 5-hour window only",
-            "Color the status bar by the 7-day window only",
-            "Color the status bar by whichever window's utilization is higher (default)"
-          ],
+          "pattern": "^(5h|7d|max|max-all|model:.+)$",
+          "patternErrorMessage": "Use '5h', '7d', 'max', 'max-all', or 'model:<display name>' (e.g. 'model:Fable').",
           "default": "max",
-          "description": "Which window's utilization drives the status bar background color."
+          "markdownDescription": "Which window's utilization drives the status bar background color: `5h`, `7d`, `max` (higher of the 5-hour and 7-day windows), `max-all` (highest of every window, per-model included), or `model:<display name>`."
         },
         "claude-usage-monitor.warningThreshold": {
           "type": "number",

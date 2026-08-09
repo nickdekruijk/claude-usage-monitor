@@ -23,9 +23,10 @@ src/
 interface UsageData {
   fiveHour: QuotaBucket | null;
   sevenDay: QuotaBucket | null;
-  sevenDaySonnet: QuotaBucket | null;
-  sevenDayOpus: QuotaBucket | null;
+  sevenDaySonnet: QuotaBucket | null;      // legacy — null on current accounts
+  sevenDayOpus: QuotaBucket | null;        // legacy — null on current accounts
   sevenDayOauthApps: QuotaBucket | null;
+  limits?: UsageLimit[];                   // newer source of truth; undefined when revived from pre-1.3.0 cache
   extraUsage: ExtraUsage | null;
   fetchedAt: Date;
 }
@@ -34,7 +35,20 @@ interface QuotaBucket {
   utilization: number; // percentage 0-100
   resetsAt: string;    // ISO 8601
 }
+
+interface UsageLimit {   // one entry of the API's `limits` array, parsed generically
+  kind: string;          // "session" | "weekly_all" | "weekly_scoped" | future kinds
+  group: string | null;  // "session" | "weekly"
+  percent: number;       // 0-100 int
+  severity: string | null;
+  resetsAt: string | null;
+  isActive: boolean;     // NOTE: scoped entries report false while still meaningful — never filter on it
+  modelName: string | null; // scope.model.display_name, e.g. "Fable" — the only model handle (scope.model.id is null)
+  surface: string | null;
+}
 ```
+
+The per-model quota fields (`seven_day_sonnet` etc.) went stale upstream because they were hardcoded; per-model usage now lives in the API's `limits` array. **Parse `limits` generically — never hardcode a model name.** The popover renders from `limits` when non-empty (legacy fields as fallback), and `usageClient` synthesizes `fiveHour`/`sevenDay` from `session`/`weekly_all` entries when the legacy fields are null so the status bar keeps working.
 
 ## API
 

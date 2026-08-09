@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { UsageData, QuotaBucket } from "./types";
+import { UsageData, QuotaBucket, UsageLimit } from "./types";
 
 function timeAgo(date: Date): string {
   const sec = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -99,6 +99,82 @@ function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: numb
 			</div>`;
 }
 
+export function limitLabel(l: UsageLimit): string {
+  if (l.modelName) {
+    const prefix = l.group === "weekly" ? "7-Day " : l.group === "session" ? "Session " : "";
+    const surface = l.surface ? ` (${l.surface})` : "";
+    return `${prefix}${l.modelName}${surface}`;
+  }
+  switch (l.kind) {
+    case "session":    return "5-Hour Window";
+    case "weekly_all": return "7-Day All Models";
+    default:
+      // Unknown kind — prettify "some_new_kind" → "Some New Kind"
+      return l.kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+}
+
+/** Severity can force a higher alert color than the numeric thresholds. */
+function severityColor(severity: string | null): string | null {
+  if (severity === "warning") { return "#ffd93d"; }
+  if (severity === "error" || severity === "critical" || severity === "exceeded" || severity === "over_limit") { return "#ff6b6b"; }
+  return null; // "normal", null, or unknown → use thresholds
+}
+
+function limitRow(l: UsageLimit, warnT: number, errT: number): string {
+  const pct = l.percent;
+  // Severity can only escalate past the thresholds, never downgrade them
+  const rank = (c: string) => c === "#ff6b6b" ? 2 : c === "#ffd93d" ? 1 : 0;
+  const tColor = barColor(pct, warnT, errT);
+  const sColor = severityColor(l.severity);
+  const color = sColor && rank(sColor) > rank(tColor) ? sColor : tColor;
+  const meta = l.resetsAt
+    ? `<span>Resets in ${formatTimeRemaining(l.resetsAt)}</span><span>${formatResetDate(l.resetsAt)}</span>`
+    : `<span></span><span></span>`;
+  return `
+			<div class="bucket">
+				<div class="bucket-header">
+					<span class="bucket-label">${limitLabel(l)}</span>
+					<span class="bucket-pct" style="color:${color}">${pct.toFixed(0)}%</span>
+				</div>
+				<div class="progress"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
+				<div class="bucket-meta">${meta}</div>
+			</div>`;
+}
+
+/** Stable render order: session first, then weekly all-models, then scoped/others. */
+export function sortLimits(limits: UsageLimit[]): UsageLimit[] {
+  const rank = (l: UsageLimit) =>
+    l.kind === "session" ? 0 : l.kind === "weekly_all" ? 1 : l.modelName ? 2 : 3;
+  return [...limits].sort((a, b) => rank(a) - rank(b));
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+/**
+ * <option> tags for each per-model window the API reports, for the status bar
+ * Display / Color-from dropdowns. If the current setting names a model that is
+ * no longer reported, keep it listed (and selected) instead of clobbering it.
+ */
+function modelOptions(limits: UsageLimit[], current: string): string {
+  const models = limits.filter((l) => l.modelName !== null);
+  const cur = current.toLowerCase();
+  let html = models.map((l) => {
+    const value = `model:${l.modelName}`;
+    const selected = cur === value.toLowerCase() ? " selected" : "";
+    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(limitLabel(l))}</option>`;
+  }).join("");
+  if (cur.startsWith("model:")) {
+    const name = current.slice("model:".length);
+    if (!models.some((l) => l.modelName!.toLowerCase() === name.toLowerCase())) {
+      html += `<option value="${escapeHtml(current)}" selected>${escapeHtml(name)} (not currently reported)</option>`;
+    }
+  }
+  return html;
+}
+
 function readPanelConfig() {
   const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
   return {
@@ -143,12 +219,23 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
 		</div>`
     : "";
 
+  // Prefer the newer `limits` array (covers session, weekly, and any scoped
+  // per-model windows like Fable). Fall back to the legacy fields for accounts
+  // that don't return `limits` — and for data revived from a pre-1.3.0 cache,
+  // where `limits` is undefined.
+  const limits = sortLimits(data.limits ?? []);
   const buckets: string[] = [];
-  if (data.fiveHour)          { buckets.push(bucketRow("5-Hour Window",    data.fiveHour,          warnT, errT)); }
-  if (data.sevenDay)          { buckets.push(bucketRow("7-Day Window",     data.sevenDay,          warnT, errT)); }
-  if (data.sevenDaySonnet)    { buckets.push(bucketRow("7-Day Sonnet",     data.sevenDaySonnet,    warnT, errT)); }
-  if (data.sevenDayOpus)      { buckets.push(bucketRow("7-Day Opus",       data.sevenDayOpus,      warnT, errT)); }
-  if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
+  if (limits.length > 0) {
+    for (const l of limits) { buckets.push(limitRow(l, warnT, errT)); }
+    // Legacy windows with no equivalent limits entry (e.g. OAuth apps)
+    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
+  } else {
+    if (data.fiveHour)          { buckets.push(bucketRow("5-Hour Window",    data.fiveHour,          warnT, errT)); }
+    if (data.sevenDay)          { buckets.push(bucketRow("7-Day Window",     data.sevenDay,          warnT, errT)); }
+    if (data.sevenDaySonnet)    { buckets.push(bucketRow("7-Day Sonnet",     data.sevenDaySonnet,    warnT, errT)); }
+    if (data.sevenDayOpus)      { buckets.push(bucketRow("7-Day Opus",       data.sevenDayOpus,      warnT, errT)); }
+    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
+  }
 
   const sel = (val: string, opt: string) => val === opt ? ' selected' : '';
 
@@ -160,19 +247,22 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
 	<div class="settings-group">
 		<div class="settings-group-title">Status Bar</div>
 		<div class="setting-row">
-			<span class="setting-label">Display <span class="info-icon" title="Which quota window to show in the status bar text. '5h' shows the 5-hour countdown and reset time, '7d' shows the 7-day window, 'both' shows both.">ⓘ</span></span>
+			<span class="setting-label">Display <span class="info-icon" title="Which quota window to show in the status bar text. '5h' shows the 5-hour countdown and reset time, '7d' shows the 7-day window, 'both' shows both. Per-model entries pin that model's weekly window (e.g. Fable).">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBar', this.value)">
 				<option value="5h"${sel(statusBar, '5h')}>5-Hour window</option>
 				<option value="7d"${sel(statusBar, '7d')}>7-Day window</option>
 				<option value="both"${sel(statusBar, 'both')}>Both windows</option>
+				${modelOptions(limits, statusBar)}
 			</select>
 		</div>
 		<div class="setting-row">
-			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of both' turns orange/red when either window hits a threshold — not just one.">ⓘ</span></span>
+			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of both' uses the 5-hour and 7-day windows; 'Highest of all windows' also counts per-model windows like Fable.">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBarColorFrom', this.value)">
 				<option value="5h"${sel(colorFrom, '5h')}>5-Hour window</option>
 				<option value="7d"${sel(colorFrom, '7d')}>7-Day window</option>
 				<option value="max"${sel(colorFrom, 'max')}>Highest of both</option>
+				<option value="max-all"${sel(colorFrom, 'max-all')}>Highest of all windows (incl. per-model)</option>
+				${modelOptions(limits, colorFrom)}
 			</select>
 		</div>
 	</div>

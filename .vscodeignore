@@ -12,3 +12,9 @@ vsc-extension-quickstart.md
 **/*.map
 **/*.ts
 **/.vscode-test.*
+chrome-extension/**
+claude-usage-monitor-extension.zip
+.claude/**
+CLAUDE.md
+*.code-workspace
+*.vsix
