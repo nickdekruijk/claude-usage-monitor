@@ -14,7 +14,7 @@ vsc-extension-quickstart.md
 **/.vscode-test.*
 chrome-extension/**
 claude-usage-monitor-extension.zip
+.claude/**
 CLAUDE.md
-CLAUDE.local-init.md
-FABLE-TRACKER-BRIEF.md
 *.code-workspace
+*.vsix

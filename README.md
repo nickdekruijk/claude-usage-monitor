@@ -32,7 +32,7 @@ Colors:
 - Yellow — 60–80%
 - Red — > 80%
 
-The status bar can also pin a per-model weekly window (e.g. Fable): pick it in the usage panel's **Settings** section, or set `claude-usage-monitor.statusBar` to `model:<display name>` (e.g. `model:Fable`). The same works for `statusBarColorFrom`, whose `max` mode considers all windows — per-model ones included.
+The status bar can also pin a per-model weekly window (e.g. Fable): pick it in the usage panel's **Settings** section, or set `claude-usage-monitor.statusBar` to `model:<display name>` (e.g. `model:Fable`). The same works for `statusBarColorFrom`. Its `max` default is unchanged — the higher of the 5-hour and 7-day windows — and the new `max-all` value opts into counting per-model windows too.
 
 ## Usage Panel
 

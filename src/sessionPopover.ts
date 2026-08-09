@@ -256,11 +256,12 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
 			</select>
 		</div>
 		<div class="setting-row">
-			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of all windows' turns orange/red when any window — including per-model ones — hits a threshold.">ⓘ</span></span>
+			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of both' uses the 5-hour and 7-day windows; 'Highest of all windows' also counts per-model windows like Fable.">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBarColorFrom', this.value)">
 				<option value="5h"${sel(colorFrom, '5h')}>5-Hour window</option>
 				<option value="7d"${sel(colorFrom, '7d')}>7-Day window</option>
-				<option value="max"${sel(colorFrom, 'max')}>Highest of all windows</option>
+				<option value="max"${sel(colorFrom, 'max')}>Highest of both</option>
+				<option value="max-all"${sel(colorFrom, 'max-all')}>Highest of all windows (incl. per-model)</option>
 				${modelOptions(limits, colorFrom)}
 			</select>
 		</div>

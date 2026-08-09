@@ -78,12 +78,14 @@ function pickColorPct(
 	switch (colorSource) {
 		case '5h': return fh.utilization;
 		case '7d': return sd ? sd.utilization : fh.utilization;
-		default: { // 'max' (or unresolvable value): highest of all windows, per-model included
+		case 'max-all': { // every window, per-model included — opt-in
 			const pcts = [fh.utilization];
 			if (sd) { pcts.push(sd.utilization); }
 			for (const l of data.limits ?? []) { pcts.push(l.percent); }
 			return Math.max(...pcts);
 		}
+		default: // 'max' (or unresolvable value): 5-hour vs 7-day only, unchanged from 1.2.0
+			return sd ? Math.max(fh.utilization, sd.utilization) : fh.utilization;
 	}
 }
 
