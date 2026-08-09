@@ -12,7 +12,10 @@ const BACKOFF_STEPS_MS = [
 	16 * 60_000,  // 3rd+ error → wait 16 min
 ];
 
-const CACHE_KEY = 'claudeUsage.cache';
+// Versioned key: pre-1.3.0 builds wrote a UsageData without `limits` to the
+// unversioned key. Sharing a key across versions let an older co-installed
+// build feed limits-free data to a newer one, blanking the per-model bars.
+const CACHE_KEY = 'claudeUsage.cache.v2';
 
 interface CacheEntry {
 	data:      UsageData | null;
