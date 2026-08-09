@@ -1,14 +1,17 @@
 import * as vscode from 'vscode';
-import { QuotaBucket, UsageData } from './types';
-import { limitLabel, sortLimits } from './sessionPopover';
+import { UsageData } from './types';
+import {
+	allWindows,
+	colorPct,
+	formatTimeRemaining,
+	readColorSources,
+	readStatusBarFormat,
+	renderTemplate,
+} from './windows';
 
-type StatusBarMode = '5h' | '7d' | 'both';
-
-// Settings accept '5h' | '7d' | 'both'/'max' | 'model:<display name>' —
-// model values are matched at runtime against the API's limits array.
 interface StatusBarConfig {
-	mode:             string;
-	colorSource:      string;
+	format:           string;
+	colorSources:     string[];
 	warningThreshold: number;
 	errorThreshold:   number;
 }
@@ -16,25 +19,11 @@ interface StatusBarConfig {
 function readConfig(): StatusBarConfig {
 	const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
 	return {
-		mode:             cfg.get<string>('statusBar', '5h'),
-		colorSource:      cfg.get<string>('statusBarColorFrom', 'max'),
+		format:           readStatusBarFormat(),
+		colorSources:     readColorSources(),
 		warningThreshold: cfg.get<number>('warningThreshold', 60),
 		errorThreshold:   cfg.get<number>('errorThreshold', 80),
 	};
-}
-
-/** 'model:Fable' → 'Fable', anything else → null */
-function parseModelValue(value: string): string | null {
-	return value.startsWith('model:') && value.length > 'model:'.length
-		? value.slice('model:'.length)
-		: null;
-}
-
-function findModelLimit(data: UsageData, name: string) {
-	const lower = name.toLowerCase();
-	return (data.limits ?? []).find(
-		(l) => l.modelName !== null && l.modelName.toLowerCase() === lower
-	) ?? null;
 }
 
 function timeAgo(date: Date): string {
@@ -45,73 +34,10 @@ function timeAgo(date: Date): string {
 	return `${h} hour${h === 1 ? '' : 's'} ago`;
 }
 
-function formatTimeRemaining(resetsAt: string): string {
-	const ms = new Date(resetsAt).getTime() - Date.now();
-	if (ms <= 0) { return 'resetting'; }
-	const totalMin = Math.floor(ms / 60_000);
-	const h = Math.floor(totalMin / 60);
-	const m = totalMin % 60;
-	if (h >= 24) {
-		return new Date(resetsAt).toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
-	}
-	return h > 0 ? `${h}h ${m}m` : `${m}m`;
-}
-
 function utilizationColor(pct: number, warnT: number, errT: number): vscode.ThemeColor | undefined {
 	if (pct >= errT)  { return new vscode.ThemeColor('statusBarItem.errorBackground'); }
 	if (pct >= warnT) { return new vscode.ThemeColor('statusBarItem.warningBackground'); }
 	return undefined;
-}
-
-function pickColorPct(
-	colorSource: string,
-	data: UsageData,
-	fh: QuotaBucket,
-	sd: QuotaBucket | null,
-): number {
-	const modelName = parseModelValue(colorSource);
-	if (modelName) {
-		const l = findModelLimit(data, modelName);
-		if (l) { return l.percent; }
-		// model not reported → fall through to 'max'
-	}
-	switch (colorSource) {
-		case '5h': return fh.utilization;
-		case '7d': return sd ? sd.utilization : fh.utilization;
-		case 'max-all': { // every window, per-model included — opt-in
-			const pcts = [fh.utilization];
-			if (sd) { pcts.push(sd.utilization); }
-			for (const l of data.limits ?? []) { pcts.push(l.percent); }
-			return Math.max(...pcts);
-		}
-		default: // 'max' (or unresolvable value): 5-hour vs 7-day only, unchanged from 1.2.0
-			return sd ? Math.max(fh.utilization, sd.utilization) : fh.utilization;
-	}
-}
-
-function renderText(
-	mode: StatusBarMode,
-	fh: QuotaBucket,
-	sd: QuotaBucket | null,
-	withWarning: boolean,
-): string {
-	const suffix = withWarning ? ' $(warning)' : '';
-	const fhPct  = fh.utilization.toFixed(0);
-	const fhTime = formatTimeRemaining(fh.resetsAt);
-
-	if (mode === '7d' && sd) {
-		const sdPct  = sd.utilization.toFixed(0);
-		const sdTime = formatTimeRemaining(sd.resetsAt);
-		return `$(claude-icon) 7d ${sdPct}% · ${sdTime}${suffix}`;
-	}
-
-	if (mode === 'both' && sd) {
-		const sdPct = sd.utilization.toFixed(0);
-		return `$(claude-icon) 5h ${fhPct}% (${fhTime}) · 7d ${sdPct}%${suffix}`;
-	}
-
-	// '5h' mode, or '7d'/'both' fallback when sevenDay is missing
-	return `$(claude-icon) ${fhPct}% · ${fhTime}${suffix}`;
 }
 
 export class StatusBarManager {
@@ -126,15 +52,8 @@ export class StatusBarManager {
 		this.item.show();
 
 		this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
-			if (
-				e.affectsConfiguration('claude-usage-monitor.statusBar') ||
-				e.affectsConfiguration('claude-usage-monitor.statusBarColorFrom') ||
-				e.affectsConfiguration('claude-usage-monitor.warningThreshold') ||
-				e.affectsConfiguration('claude-usage-monitor.errorThreshold')
-			) {
-				if (this.lastData) {
-					this.update(this.lastData, this.lastError);
-				}
+			if (e.affectsConfiguration('claude-usage-monitor') && this.lastData) {
+				this.update(this.lastData, this.lastError);
 			}
 		});
 	}
@@ -143,34 +62,22 @@ export class StatusBarManager {
 		this.lastData  = data;
 		this.lastError = error;
 
-		const fh = data.fiveHour;
-		if (!fh) {
+		const windows = allWindows(data);
+		if (windows.length === 0) {
 			this.item.text = '$(claude-icon) No data';
-			this.item.tooltip = 'No 5-hour quota data returned from API';
+			this.item.tooltip = 'No quota windows returned from API';
 			this.item.backgroundColor = undefined;
 			return;
 		}
 
-		const { mode, colorSource, warningThreshold, errorThreshold } = readConfig();
-		const sd = data.sevenDay;
-		const eu = data.extraUsage;
+		const { format, colorSources, warningThreshold, errorThreshold } = readConfig();
 
-		const modelName  = parseModelValue(mode);
-		const modelLimit = modelName ? findModelLimit(data, modelName) : null;
-		if (modelLimit) {
-			const suffix = error ? ' $(warning)' : '';
-			const time = modelLimit.resetsAt ? ` · ${formatTimeRemaining(modelLimit.resetsAt)}` : '';
-			this.item.text = `$(claude-icon) ${modelLimit.modelName} ${modelLimit.percent.toFixed(0)}%${time}${suffix}`;
-		} else {
-			// '5h' | '7d' | 'both', or a model value the API no longer reports → default to '5h'
-			const baseMode: StatusBarMode = mode === '7d' || mode === 'both' ? mode : '5h';
-			this.item.text = renderText(baseMode, fh, sd, !!error);
-		}
+		const body = renderTemplate(format, data);
+		this.item.text = `${body || '$(claude-icon)'}${error ? ' $(warning)' : ''}`;
 
-		const colorPct = pickColorPct(colorSource, data, fh, sd);
 		this.item.backgroundColor = error
 			? new vscode.ThemeColor('statusBarItem.warningBackground')
-			: utilizationColor(colorPct, warningThreshold, errorThreshold);
+			: utilizationColor(colorPct(data, colorSources), warningThreshold, errorThreshold);
 
 		const bar = (p: number) => {
 			const filled = Math.round(Math.min(p, 100) / 10);
@@ -178,47 +85,29 @@ export class StatusBarManager {
 			return `[${('█'.repeat(filled)).padEnd(10, '—')}] ${p.toFixed(0)}% ${color}`;
 		};
 
-		const lines: string[] = [
-			`$(claude-icon) **Claude Usage**`,
-			`---`,
-			`**5-Hour Window**`,
-			`\`${bar(fh.utilization)}\``,
-			`↻ Resets in **${formatTimeRemaining(fh.resetsAt)}**`,
-		];
+		const lines: string[] = [`$(claude-icon) **Claude Usage**`, `---`];
 
-		if (sd) {
+		// One entry per window the account reports, per-model included.
+		for (const w of windows) {
 			lines.push(
-				`\n**7-Day Window**`,
-				`\`${bar(sd.utilization)}\``,
-				`↻ Resets in **${formatTimeRemaining(sd.resetsAt)}**`,
+				w.resetsAt
+					? `**${w.label}**\n\n\`${bar(w.pct)}\`\n\n↻ Resets in **${formatTimeRemaining(w.resetsAt)}**`
+					: `**${w.label}**\n\n\`${bar(w.pct)}\``,
 			);
 		}
 
-		// Scoped per-model windows from the newer `limits` array (e.g. 7-Day Fable)
-		for (const l of sortLimits(data.limits ?? [])) {
-			if (l.modelName) {
-				lines.push(`**${limitLabel(l)}** \`${bar(l.percent)}\``);
-			}
-		}
-
-		if (data.sevenDaySonnet) {
-			lines.push(`**7-Day Sonnet** \`${bar(data.sevenDaySonnet.utilization)}\``);
-		}
-		if (data.sevenDayOpus) {
-			lines.push(`**7-Day Opus** \`${bar(data.sevenDayOpus.utilization)}\``);
-		}
-
+		const eu = data.extraUsage;
 		if (eu?.isEnabled && eu.usedCredits !== null) {
 			const spent = (eu.usedCredits / 100).toFixed(2);
 			const cap   = eu.monthlyLimit !== null ? ` / $${(eu.monthlyLimit / 100).toFixed(2)}` : '';
-			lines.push(`\n**Extra Usage**  💳 $${spent}${cap} ${eu.currency ?? ''}`);
+			lines.push(`**Extra Usage**  💳 $${spent}${cap} ${eu.currency ?? ''}`);
 		}
 
 		if (error) {
-			lines.push(`\n⚠️ *Poll failed — showing cached data*`);
+			lines.push(`⚠️ *Poll failed — showing cached data*`);
 		}
 
-		lines.push(`\n---\n_Updated ${timeAgo(data.fetchedAt)} · Click to open panel_`);
+		lines.push(`---\n_Updated ${timeAgo(data.fetchedAt)} · Click to open panel_`);
 
 		const md = new vscode.MarkdownString(lines.join('\n\n'));
 		md.supportThemeIcons = true;

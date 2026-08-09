@@ -1,5 +1,15 @@
 import * as vscode from "vscode";
 import { UsageData, QuotaBucket, UsageLimit } from "./types";
+import {
+  allWindows,
+  limitLabel,
+  presets,
+  readColorSources,
+  readStatusBarFormat,
+  renderTemplate,
+  sortLimits,
+  tokenValues,
+} from "./windows";
 
 function timeAgo(date: Date): string {
   const sec = Math.floor((Date.now() - date.getTime()) / 1000);
@@ -99,21 +109,6 @@ function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: numb
 			</div>`;
 }
 
-export function limitLabel(l: UsageLimit): string {
-  if (l.modelName) {
-    const prefix = l.group === "weekly" ? "7-Day " : l.group === "session" ? "Session " : "";
-    const surface = l.surface ? ` (${l.surface})` : "";
-    return `${prefix}${l.modelName}${surface}`;
-  }
-  switch (l.kind) {
-    case "session":    return "5-Hour Window";
-    case "weekly_all": return "7-Day All Models";
-    default:
-      // Unknown kind — prettify "some_new_kind" → "Some New Kind"
-      return l.kind.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-  }
-}
-
 /** Severity can force a higher alert color than the numeric thresholds. */
 function severityColor(severity: string | null): string | null {
   if (severity === "warning") { return "#ffd93d"; }
@@ -142,47 +137,26 @@ function limitRow(l: UsageLimit, warnT: number, errT: number): string {
 			</div>`;
 }
 
-/** Stable render order: session first, then weekly all-models, then scoped/others. */
-export function sortLimits(limits: UsageLimit[]): UsageLimit[] {
-  const rank = (l: UsageLimit) =>
-    l.kind === "session" ? 0 : l.kind === "weekly_all" ? 1 : l.modelName ? 2 : 3;
-  return [...limits].sort((a, b) => rank(a) - rank(b));
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-/**
- * <option> tags for each per-model window the API reports, for the status bar
- * Display / Color-from dropdowns. If the current setting names a model that is
- * no longer reported, keep it listed (and selected) instead of clobbering it.
- */
-function modelOptions(limits: UsageLimit[], current: string): string {
-  const models = limits.filter((l) => l.modelName !== null);
-  const cur = current.toLowerCase();
-  let html = models.map((l) => {
-    const value = `model:${l.modelName}`;
-    const selected = cur === value.toLowerCase() ? " selected" : "";
-    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(limitLabel(l))}</option>`;
-  }).join("");
-  if (cur.startsWith("model:")) {
-    const name = current.slice("model:".length);
-    if (!models.some((l) => l.modelName!.toLowerCase() === name.toLowerCase())) {
-      html += `<option value="${escapeHtml(current)}" selected>${escapeHtml(name)} (not currently reported)</option>`;
-    }
-  }
-  return html;
+/** The CC mark, sized for inline use in the status bar preview. */
+const ICON_SVG = `<svg class="sb-icon" viewBox="50 140 420 290" width="17" height="12" aria-hidden="true"><path d="M 250 200 A 100 100 0 1 0 250 362" stroke="#C15F3C" stroke-width="50" fill="none" stroke-linecap="round"/><path d="M 402 200 A 100 100 0 1 0 402 362" stroke="#C15F3C" stroke-width="50" fill="none" stroke-linecap="round"/></svg>`;
+
+/** Render status bar text (which carries $(codicon) refs) as preview HTML. */
+function statusTextToHtml(text: string): string {
+  return escapeHtml(text)
+    .replace(/\$\(claude-icon\)/g, ICON_SVG)
+    .replace(/\$\(warning\)/g, "⚠");
 }
 
 function readPanelConfig() {
   const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
   return {
-    warnT:     cfg.get<number>('warningThreshold', 60),
-    errT:      cfg.get<number>('errorThreshold', 80),
-    statusBar: cfg.get<string>('statusBar', '5h'),
-    colorFrom: cfg.get<string>('statusBarColorFrom', 'max'),
-    clockFmt:  cfg.get<string>('clockFormat', 'auto'),
+    warnT:    cfg.get<number>('warningThreshold', 60),
+    errT:     cfg.get<number>('errorThreshold', 80),
+    clockFmt: cfg.get<string>('clockFormat', 'auto'),
   };
 }
 
@@ -193,6 +167,8 @@ interface PanelState {
   bucketsHtml: string;
   extraHtml: string;
   settingsHtml: string;
+  /** Current value of every {window.field} token, for the live format preview. */
+  tokens: Record<string, string>;
 }
 
 /**
@@ -202,7 +178,7 @@ interface PanelState {
  * user is mid-edit all survive a poll.
  */
 function buildFragments(data: UsageData | null, error: string | null): PanelState {
-  const { warnT, errT, statusBar, colorFrom, clockFmt } = readPanelConfig();
+  const { warnT, errT, clockFmt } = readPanelConfig();
 
   let errorHtml = "";
   if (error) {
@@ -257,27 +233,48 @@ function buildFragments(data: UsageData | null, error: string | null): PanelStat
 
   const sel = (val: string, opt: string) => val === opt ? ' selected' : '';
 
+  const format       = readStatusBarFormat();
+  const colorSources = readColorSources().map((s) => s.toLowerCase());
+  const windows      = data ? allWindows(data) : [];
+  const colorAll     = colorSources.some((s) => s === "*" || s === "max-all");
+
+  const chips = presets(data).map((p) => {
+    const active = p.template === format ? " active" : "";
+    return `<button class="chip${active}" data-tpl="${escapeHtml(p.template)}" onclick="applyPreset(this)">${escapeHtml(p.label)}</button>`;
+  }).join("");
+
+  const colorBoxes = windows.map((w) => {
+    const checked = colorAll || colorSources.includes(w.key.toLowerCase()) ? " checked" : "";
+    return `<label class="check"><input type="checkbox" value="${escapeHtml(w.key)}"${checked} onchange="updateColorSources()"> ${escapeHtml(w.label)}</label>`;
+  }).join("");
+
+  const windowKeys = [...windows.map((w) => `{${w.key}}`), "{max}"].join(" ");
+
   const settingsHtml = `
 	<div class="settings-group">
 		<div class="settings-group-title">Status Bar</div>
 		<div class="setting-row">
-			<span class="setting-label">Display <span class="info-icon" title="Which quota window to show in the status bar text. '5h' shows the 5-hour countdown and reset time, '7d' shows the 7-day window, 'both' shows both. Per-model entries pin that model's weekly window (e.g. Fable).">ⓘ</span></span>
-			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBar', this.value)">
-				<option value="5h"${sel(statusBar, '5h')}>5-Hour window</option>
-				<option value="7d"${sel(statusBar, '7d')}>7-Day window</option>
-				<option value="both"${sel(statusBar, 'both')}>Both windows</option>
-				${modelOptions(limits, statusBar)}
-			</select>
+			<span class="setting-label">Preview</span>
+			<span class="sb-preview" id="sb-preview">${data ? statusTextToHtml(renderTemplate(format, data)) : "—"}</span>
 		</div>
-		<div class="setting-row">
-			<span class="setting-label">Color from <span class="info-icon" title="Which window's usage percentage drives the status bar color. 'Highest of both' uses the 5-hour and 7-day windows; 'Highest of all windows' also counts per-model windows like Fable.">ⓘ</span></span>
-			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.statusBarColorFrom', this.value)">
-				<option value="5h"${sel(colorFrom, '5h')}>5-Hour window</option>
-				<option value="7d"${sel(colorFrom, '7d')}>7-Day window</option>
-				<option value="max"${sel(colorFrom, 'max')}>Highest of both</option>
-				<option value="max-all"${sel(colorFrom, 'max-all')}>Highest of all windows (incl. per-model)</option>
-				${modelOptions(limits, colorFrom)}
-			</select>
+		<div class="setting-stack">
+			<span class="setting-label">Display <span class="info-icon" title="Pick a preset, or edit the format below to build your own.">ⓘ</span></span>
+			<div class="chips">${chips}</div>
+		</div>
+		<div class="setting-stack">
+			<span class="setting-label">Format</span>
+			<input type="text" class="format-input" id="sb-format" spellcheck="false" value="${escapeHtml(format)}"
+				oninput="previewFormat(this.value)"
+				onchange="updateSetting('claude-usage-monitor.statusBarFormat', this.value)">
+			<div class="hint">Windows ${escapeHtml(windowKeys)} · fields <code>.pct .reset .resetAt .name .bar</code> · plus <code>{icon}</code></div>
+		</div>
+	</div>
+
+	<div class="settings-group">
+		<div class="settings-group-title">Status Bar Color</div>
+		<div class="setting-stack" id="color-sources">
+			${colorBoxes || '<div class="hint">No windows reported yet.</div>'}
+			<div class="hint">Turns orange/red when the highest checked window crosses a threshold below.</div>
 		</div>
 	</div>
 
@@ -313,7 +310,15 @@ function buildFragments(data: UsageData | null, error: string | null): PanelStat
 		</div>
 	</div>`;
 
-  return { type: "state", subtitle, errorHtml, bucketsHtml, extraHtml: extraSection, settingsHtml };
+  return {
+    type: "state",
+    subtitle,
+    errorHtml,
+    bucketsHtml,
+    extraHtml: extraSection,
+    settingsHtml,
+    tokens: tokenValues(data),
+  };
 }
 
 /** The panel's static shell — written to the webview exactly once, then patched. */
@@ -492,6 +497,52 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	outline: none;
 }
 .setting-input:focus { border-color: var(--vscode-focusBorder); }
+.setting-stack { display: flex; flex-direction: column; gap: 6px; padding: 7px 0; }
+.hint { font-size: 11px; color: var(--vscode-descriptionForeground); line-height: 1.5; }
+.hint code {
+	font-family: var(--vscode-editor-font-family, monospace);
+	background: var(--vscode-textCodeBlock-background, rgba(127,127,127,0.15));
+	border-radius: 3px;
+	padding: 0 3px;
+}
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+	background: var(--vscode-button-secondaryBackground, rgba(127,127,127,0.18));
+	color: var(--vscode-button-secondaryForeground, var(--vscode-foreground));
+	border: 1px solid transparent;
+	border-radius: 999px;
+	padding: 3px 11px;
+	font-family: inherit;
+	font-size: 11px;
+	cursor: pointer;
+}
+.chip:hover { border-color: var(--vscode-focusBorder); }
+.chip.active { background: #C15F3C; color: #fff; font-weight: 600; }
+.format-input {
+	width: 100%;
+	background: var(--vscode-input-background);
+	color: var(--vscode-input-foreground);
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 2px;
+	padding: 5px 7px;
+	font-size: 12px;
+	font-family: var(--vscode-editor-font-family, monospace);
+	outline: none;
+}
+.format-input:focus { border-color: var(--vscode-focusBorder); }
+.sb-preview {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	background: var(--vscode-statusBar-background, rgba(127,127,127,0.18));
+	border-radius: 3px;
+	padding: 2px 8px;
+	font-size: 12px;
+	white-space: nowrap;
+}
+.sb-icon { flex-shrink: 0; }
+.check { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
+.check input { cursor: pointer; margin: 0; }
 .threshold-wrap { display: flex; align-items: center; gap: 4px; }
 .threshold-pct { font-size: 12px; color: var(--vscode-descriptionForeground); }
 .color-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -534,8 +585,65 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	const vscode = acquireVsCodeApi();
 	const TABS = ['usage', 'settings'];
 
+	const ICON_MARK = '@@ICON@@';
+	const ICON_SVG  = ${JSON.stringify(ICON_SVG)};
+	var TOKENS = {};
+
 	function updateSetting(key, value) {
 		vscode.postMessage({ command: 'updateSetting', key, value });
+	}
+
+	function esc(s) {
+		return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+	}
+
+	// Same substitution the extension does, over the token values it sent, so
+	// the preview cannot drift from what the status bar will actually render.
+	function renderPreview(tpl) {
+		var filled = String(tpl).replace(/\\{\\{|\\}\\}|\\{([^{}]*)\\}/g, function (m, expr) {
+			if (m === '{{') { return '{'; }
+			if (m === '}}') { return '}'; }
+			var key = String(expr).trim().toLowerCase();
+			if (key === 'icon') { return ICON_MARK; }
+			return TOKENS[key] != null ? TOKENS[key] : '';
+		});
+		var parts = filled.split('·').map(function (p) {
+			return p.replace(/\\s+/g, ' ').trim();
+		}).filter(function (p) { return p.length > 0; });
+
+		// Mirrors collapse() in windows.ts: an icon-only segment earns no separator.
+		var bare = function (s) { return s.split(ICON_MARK).join('').trim(); };
+		var out  = '';
+		for (var i = 0; i < parts.length; i++) {
+			if (!out) { out = parts[i]; }
+			else if (bare(out) === '' || bare(parts[i]) === '') { out += ' ' + parts[i]; }
+			else { out += ' · ' + parts[i]; }
+		}
+		return esc(out).split(ICON_MARK).join(ICON_SVG);
+	}
+
+	function previewFormat(tpl) {
+		var el = document.getElementById('sb-preview');
+		if (el) { el.innerHTML = renderPreview(tpl) || '—'; }
+	}
+
+	function applyPreset(btn) {
+		var tpl   = btn.getAttribute('data-tpl');
+		var input = document.getElementById('sb-format');
+		if (input) { input.value = tpl; }
+		previewFormat(tpl);
+		var chips = document.querySelectorAll('.chip');
+		for (var i = 0; i < chips.length; i++) { chips[i].classList.toggle('active', chips[i] === btn); }
+		updateSetting('claude-usage-monitor.statusBarFormat', tpl);
+	}
+
+	function updateColorSources() {
+		var boxes = document.querySelectorAll('#color-sources input[type=checkbox]');
+		var vals  = [];
+		for (var i = 0; i < boxes.length; i++) {
+			if (boxes[i].checked) { vals.push(boxes[i].value); }
+		}
+		updateSetting('claude-usage-monitor.statusBarColorFrom', vals);
 	}
 
 	function setTab(name) {
@@ -569,6 +677,7 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	window.addEventListener('message', function (e) {
 		var m = e.data;
 		if (!m || m.type !== 'state') { return; }
+		TOKENS = m.tokens || {};
 		document.getElementById('subtitle').innerHTML      = m.subtitle;
 		document.getElementById('error-banner').innerHTML  = m.errorHtml;
 		document.getElementById('quota-windows').innerHTML = m.bucketsHtml;

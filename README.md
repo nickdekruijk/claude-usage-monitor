@@ -32,7 +32,21 @@ Colors:
 - Yellow — 60–80%
 - Red — > 80%
 
-The status bar can also pin a per-model weekly window (e.g. Fable): pick it in the usage panel's **Settings** section, or set `claude-usage-monitor.statusBar` to `model:<display name>` (e.g. `model:Fable`). The same works for `statusBarColorFrom`. Its `max` default is unchanged — the higher of the 5-hour and 7-day windows — and the new `max-all` value opts into counting per-model windows too.
+### Customising the text
+
+The status bar is driven by a format template, `claude-usage-monitor.statusBarFormat`. Windows are addressed as `{5h.…}`, `{7d.…}`, `{max.…}` (whichever window is highest right now) or `{model:<display name>.…}` — the last one resolves against whatever models your account reports, so a new tier is addressable without a new release.
+
+| Template | Renders |
+| --- | --- |
+| `{icon} {5h.pct} · {5h.reset}` | `12% · 3h 40m` *(default)* |
+| `{icon} 5h {5h.pct} · 7d {7d.pct}` | `5h 12% · 7d 2%` |
+| `{icon} Fable {model:Fable.pct}` | `Fable 91%` |
+| `{icon} {max.name} {max.pct}` | `Fable 91%` — follows whichever window is worst |
+| `{icon} {5h.bar} {5h.pct}` | `█░░░░░░░░░ 12%` |
+
+Fields are `.pct`, `.reset`, `.resetAt`, `.name` and `.bar`. `{icon}` inserts the Claude mark and `{{`/`}}` escape literal braces. A token naming a window your account doesn't report renders empty, and the leftover separator is removed rather than left dangling.
+
+The usage panel's **Settings** tab has presets, a live preview, and a checkbox per window for `claude-usage-monitor.statusBarColorFrom`, which colours the bar from the highest of the windows you check (default: the 5-hour and 7-day windows).
 
 ## Usage Panel
 

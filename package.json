@@ -53,19 +53,31 @@
           "default": "auto",
           "description": "Clock format for reset times in the usage panel."
         },
+        "claude-usage-monitor.statusBarFormat": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Template for the status bar text. Windows are addressed as `{5h.…}`, `{7d.…}`, `{max.…}` (whichever is highest right now) or `{model:<display name>.…}` (e.g. `{model:Fable.pct}`). Fields: `.pct`, `.reset`, `.resetAt`, `.name`, `.bar`. `{icon}` inserts the Claude mark, `{{`/`}}` escape braces, and a token for a window your account does not report renders empty.\n\nExamples:\n- `{icon} {5h.pct} · {5h.reset}` → `12% · 3h 40m`\n- `{icon} {max.name} {max.pct}` → follows whichever window is worst\n\nLeave empty to follow `#claude-usage-monitor.statusBar#`. The usage panel's Settings tab has presets and a live preview."
+        },
         "claude-usage-monitor.statusBar": {
           "type": "string",
           "pattern": "^(5h|7d|both|model:.+)$",
           "patternErrorMessage": "Use '5h', '7d', 'both', or 'model:<display name>' (e.g. 'model:Fable').",
           "default": "5h",
-          "markdownDescription": "Which quota window to show in the status bar text: `5h`, `7d`, `both`, or `model:<display name>` (e.g. `model:Fable`) for a per-model weekly window. The usage panel's Settings section lists the models your account currently reports."
+          "markdownDescription": "Which quota window to show in the status bar text: `5h`, `7d`, `both`, or `model:<display name>`. Superseded by `#claude-usage-monitor.statusBarFormat#`, which is used instead whenever it is set."
         },
         "claude-usage-monitor.statusBarColorFrom": {
-          "type": "string",
-          "pattern": "^(5h|7d|max|max-all|model:.+)$",
-          "patternErrorMessage": "Use '5h', '7d', 'max', 'max-all', or 'model:<display name>' (e.g. 'model:Fable').",
-          "default": "max",
-          "markdownDescription": "Which window's utilization drives the status bar background color: `5h`, `7d`, `max` (higher of the 5-hour and 7-day windows), `max-all` (highest of every window, per-model included), or `model:<display name>`."
+          "type": [
+            "array",
+            "string"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "5h",
+            "7d"
+          ],
+          "markdownDescription": "Which windows drive the status bar background color — it turns orange/red when the highest of them crosses a threshold. Use window addresses: `5h`, `7d`, `model:<display name>`, or `*` for every window the account reports.\n\nExample: `[\"5h\", \"7d\", \"model:Fable\"]`.\n\nLegacy string values (`max`, `5h`, `7d`, `model:…`) are still honored."
         },
         "claude-usage-monitor.warningThreshold": {
           "type": "number",
