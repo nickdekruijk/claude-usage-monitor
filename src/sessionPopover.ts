@@ -134,7 +134,7 @@ function limitRow(l: UsageLimit, warnT: number, errT: number): string {
   return `
 			<div class="bucket">
 				<div class="bucket-header">
-					<span class="bucket-label">${limitLabel(l)}</span>
+					<span class="bucket-label">${escapeHtml(limitLabel(l))}</span>
 					<span class="bucket-pct" style="color:${color}">${pct.toFixed(0)}%</span>
 				</div>
 				<div class="progress"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
@@ -186,23 +186,37 @@ function readPanelConfig() {
   };
 }
 
-function buildHtml(data: UsageData | null, error: string | null = null): string {
-  if (!data) {
-    let body: string;
-    if (error) {
-      const { message, hint } = formatError(error);
-      body = `<h3 style="color:#ff6b6b;margin-bottom:12px">Error</h3>
-<p style="font-size:12px;color:var(--vscode-foreground);margin-bottom:${hint ? '10px' : '0'}">${message}</p>
-${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);line-height:1.5">${hint}</p>` : ''}`;
-    } else {
-      body = `<h3>No data yet</h3><p>Fetching usage from Anthropic API…</p>`;
-    }
-    return `<!DOCTYPE html><html><body style="font-family:var(--vscode-font-family);padding:40px;color:var(--vscode-descriptionForeground);background:var(--vscode-editor-background)">${body}</body></html>`;
-  }
+interface PanelState {
+  type: "state";
+  subtitle: string;
+  errorHtml: string;
+  bucketsHtml: string;
+  extraHtml: string;
+  settingsHtml: string;
+}
 
+/**
+ * The data-dependent fragments of the panel. These are pushed to the webview
+ * over postMessage and patched into their containers, so the document itself
+ * is never replaced — the active tab, the scroll position, and any control the
+ * user is mid-edit all survive a poll.
+ */
+function buildFragments(data: UsageData | null, error: string | null): PanelState {
   const { warnT, errT, statusBar, colorFrom, clockFmt } = readPanelConfig();
 
-  const eu = data.extraUsage;
+  let errorHtml = "";
+  if (error) {
+    const { message, hint } = formatError(error);
+    const lead = data
+      ? "<strong>⚠️ Last poll failed</strong> — showing cached data"
+      : "<strong>⚠️ Could not fetch usage</strong>";
+    errorHtml = `<div class="banner">${lead}<br><span style="opacity:0.85">${message}</span>${hint ? `<br><span class="banner-hint">${hint}</span>` : ""}</div>`;
+  }
+
+  const source = `<span style="opacity:0.6">api.anthropic.com/api/oauth/usage</span>`;
+  const subtitle = data ? `Updated ${timeAgo(data.fetchedAt)} · ${source}` : source;
+
+  const eu = data?.extraUsage ?? null;
   const extraSection = eu?.isEnabled
     ? `
 		<div class="section">
@@ -223,13 +237,13 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
   // per-model windows like Fable). Fall back to the legacy fields for accounts
   // that don't return `limits` — and for data revived from a pre-1.3.0 cache,
   // where `limits` is undefined.
-  const limits = sortLimits(data.limits ?? []);
+  const limits = data ? sortLimits(data.limits ?? []) : [];
   const buckets: string[] = [];
-  if (limits.length > 0) {
+  if (data && limits.length > 0) {
     for (const l of limits) { buckets.push(limitRow(l, warnT, errT)); }
     // Legacy windows with no equivalent limits entry (e.g. OAuth apps)
     if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
-  } else {
+  } else if (data) {
     if (data.fiveHour)          { buckets.push(bucketRow("5-Hour Window",    data.fiveHour,          warnT, errT)); }
     if (data.sevenDay)          { buckets.push(bucketRow("7-Day Window",     data.sevenDay,          warnT, errT)); }
     if (data.sevenDaySonnet)    { buckets.push(bucketRow("7-Day Sonnet",     data.sevenDaySonnet,    warnT, errT)); }
@@ -237,13 +251,13 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
     if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
   }
 
+  const bucketsHtml = buckets.length > 0
+    ? buckets.join("")
+    : `<div class="no-quota">${data ? "No active quota windows returned." : "Fetching usage from the Anthropic API…"}</div>`;
+
   const sel = (val: string, opt: string) => val === opt ? ' selected' : '';
 
-  const settingsSection = `
-<hr>
-<div class="section">
-	<h2>Settings</h2>
-
+  const settingsHtml = `
 	<div class="settings-group">
 		<div class="settings-group-title">Status Bar</div>
 		<div class="setting-row">
@@ -297,9 +311,13 @@ ${hint ? `<p style="font-size:12px;color:var(--vscode-descriptionForeground);lin
 				<option value="24h"${sel(clockFmt, '24h')}>24-hour (19:44)</option>
 			</select>
 		</div>
-	</div>
-</div>`;
+	</div>`;
 
+  return { type: "state", subtitle, errorHtml, bucketsHtml, extraHtml: extraSection, settingsHtml };
+}
+
+/** The panel's static shell — written to the webview exactly once, then patched. */
+function buildShell(): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -312,12 +330,73 @@ body {
 	font-size: 13px;
 	color: var(--vscode-foreground);
 	background: var(--vscode-editor-background);
-	padding: 20px;
-	max-width: 480px;
+	padding: 24px;
+	max-width: 960px;
+	margin: 0 auto;
 }
-h1 { font-size: 18px; margin-bottom: 4px; }
+/* Wide panels get multiple columns of bars instead of one tall stack. */
+#quota-windows {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+	column-gap: 28px;
+}
+/* Extra Usage tracks the same columns, so it lines up under the bars instead
+   of stretching its label and value to opposite edges of the panel. */
+#extra-usage {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+	column-gap: 28px;
+}
+/* Settings groups flow into columns so the tab fills the panel, while each
+   group keeps a form-width row instead of stretching label away from control. */
+#settings-content {
+	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+	column-gap: 32px;
+	align-items: start;
+}
+#settings-content .settings-group { min-width: 0; }
+h1 { font-size: 18px; }
 h2 { font-size: 16px; font-weight: 600; margin-bottom: 14px; }
-.subtitle { color: var(--vscode-descriptionForeground); font-size: 11px; margin-bottom: 20px; }
+.page-header { margin-bottom: 12px; }
+.title-row { display: flex; align-items: center; gap: 8px; }
+.title-row .refresh-btn { margin-left: auto; }
+.logo { flex-shrink: 0; }
+.subtitle { color: var(--vscode-descriptionForeground); font-size: 11px; margin-top: 4px; }
+.tabs {
+	display: flex;
+	gap: 2px;
+	border-bottom: 1px solid var(--vscode-panel-border);
+	margin-bottom: 18px;
+}
+.tab {
+	background: none;
+	border: none;
+	border-bottom: 2px solid transparent;
+	color: var(--vscode-descriptionForeground);
+	font-family: inherit;
+	font-size: 12px;
+	padding: 6px 12px;
+	margin-bottom: -1px;
+	cursor: pointer;
+}
+.tab:hover { color: var(--vscode-foreground); }
+.tab.active {
+	color: var(--vscode-foreground);
+	font-weight: 600;
+	border-bottom-color: #C15F3C;
+}
+.tab:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: -2px; }
+.tab-panel[hidden] { display: none; }
+.banner {
+	margin-bottom: 16px;
+	padding: 8px 12px;
+	background: #ffd93d20;
+	border-left: 3px solid #ffd93d;
+	border-radius: 4px;
+	font-size: 12px;
+}
+.banner-hint { opacity: 0.7; font-size: 11px; }
 .section { margin-bottom: 20px; }
 .section-title {
 	font-size: 11px;
@@ -397,6 +476,7 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	font-family: var(--vscode-font-family);
 	cursor: pointer;
 	outline: none;
+	max-width: 100%;
 }
 .setting-control:focus { border-color: var(--vscode-focusBorder); }
 .setting-input {
@@ -420,25 +500,89 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 </style>
 </head>
 <body>
-<h1>Claude Usage</h1>
-<div class="subtitle" style="display:flex;align-items:center;gap:8px">
-	<span>Updated ${timeAgo(data.fetchedAt)} · <span style="opacity:0.6">api.anthropic.com/api/oauth/usage</span></span>
-	<button class="refresh-btn" onclick="vscode.postMessage({command:'refresh'})" title="Refresh now">↻ Refresh</button>
+<header class="page-header">
+	<div class="title-row">
+		<svg class="logo" viewBox="50 140 420 290" width="26" height="18" aria-hidden="true">
+			<path d="M 250 200 A 100 100 0 1 0 250 362" stroke="#C15F3C" stroke-width="50" fill="none" stroke-linecap="round"/>
+			<path d="M 402 200 A 100 100 0 1 0 402 362" stroke="#C15F3C" stroke-width="50" fill="none" stroke-linecap="round"/>
+		</svg>
+		<h1>Claude Usage</h1>
+		<button class="refresh-btn" onclick="vscode.postMessage({command:'refresh'})" title="Refresh now">↻ Refresh</button>
+	</div>
+	<div class="subtitle" id="subtitle"></div>
+</header>
+
+<div class="tabs" role="tablist" aria-label="Panel sections">
+	<button class="tab active" role="tab" id="tab-usage" aria-controls="panel-usage" aria-selected="true" onclick="setTab('usage')">Usage</button>
+	<button class="tab" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1" onclick="setTab('settings')">Settings</button>
 </div>
+
+<div class="tab-panel" id="panel-usage" role="tabpanel" aria-labelledby="tab-usage">
+	<div id="error-banner"></div>
+	<div class="section">
+		<div class="section-title">Quota Windows</div>
+		<div id="quota-windows"></div>
+	</div>
+	<div id="extra-usage"></div>
+</div>
+
+<div class="tab-panel" id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" hidden>
+	<div id="settings-content"></div>
+</div>
+
 <script>
 	const vscode = acquireVsCodeApi();
+	const TABS = ['usage', 'settings'];
+
 	function updateSetting(key, value) {
 		vscode.postMessage({ command: 'updateSetting', key, value });
 	}
-</script>
-${error ? (() => { const { message, hint } = formatError(error); return `<div style="margin-bottom:16px;padding:8px 12px;background:#ffd93d20;border-left:3px solid #ffd93d;border-radius:4px;font-size:12px"><strong>⚠️ Last poll failed</strong> — showing cached data<br><span style="opacity:0.8">${message}</span>${hint ? `<br><span style="opacity:0.7;font-size:11px">${hint}</span>` : ''}</div>`; })() : ''}
-<div class="section">
-	<div class="section-title">Quota Windows</div>
-	${buckets.length > 0 ? buckets.join("") : '<div class="no-quota">No active quota windows returned.</div>'}
-</div>
 
-${extraSection}
-${settingsSection}
+	function setTab(name) {
+		for (var i = 0; i < TABS.length; i++) {
+			var t  = TABS[i];
+			var on = t === name;
+			var el = document.getElementById('tab-' + t);
+			el.classList.toggle('active', on);
+			el.setAttribute('aria-selected', on ? 'true' : 'false');
+			el.tabIndex = on ? 0 : -1;
+			document.getElementById('panel-' + t).hidden = !on;
+		}
+		vscode.setState({ activeTab: name });
+	}
+
+	document.querySelector('.tabs').addEventListener('keydown', function (e) {
+		if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') { return; }
+		var i = TABS.indexOf(String(document.activeElement.id).replace('tab-', ''));
+		if (i < 0) { return; }
+		var next = TABS[(i + (e.key === 'ArrowRight' ? 1 : TABS.length - 1)) % TABS.length];
+		setTab(next);
+		document.getElementById('tab-' + next).focus();
+	});
+
+	// Never redraw a control while the user is editing it.
+	function settingsFocused() {
+		var el = document.activeElement;
+		return !!el && document.getElementById('panel-settings').contains(el);
+	}
+
+	window.addEventListener('message', function (e) {
+		var m = e.data;
+		if (!m || m.type !== 'state') { return; }
+		document.getElementById('subtitle').innerHTML      = m.subtitle;
+		document.getElementById('error-banner').innerHTML  = m.errorHtml;
+		document.getElementById('quota-windows').innerHTML = m.bucketsHtml;
+		document.getElementById('extra-usage').innerHTML   = m.extraHtml;
+		if (!settingsFocused()) {
+			document.getElementById('settings-content').innerHTML = m.settingsHtml;
+		}
+	});
+
+	var saved = vscode.getState();
+	setTab(saved && saved.activeTab ? saved.activeTab : 'usage');
+	// The webview is torn down when hidden; ask for the current state on every load.
+	vscode.postMessage({ command: 'ready' });
+</script>
 </body>
 </html>`;
 }
@@ -451,20 +595,26 @@ export class UsagePanel {
 
   constructor(private extensionUri: vscode.Uri) {
     this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('claude-usage-monitor') && this.panel) {
-        this.panel.webview.html = buildHtml(this.lastData, this.lastError);
-      }
+      if (e.affectsConfiguration('claude-usage-monitor')) { this.post(); }
     });
+  }
+
+  /**
+   * Push the current state to the webview. The shell HTML is written once, at
+   * creation — replacing it on every poll is what used to reset the active tab
+   * and wipe whatever the user was typing into a settings field.
+   */
+  private post() {
+    this.panel?.webview.postMessage(buildFragments(this.lastData, this.lastError));
   }
 
   public show(data: UsageData | null, error: string | null = null) {
     if (data) { this.lastData = data; }
     this.lastError = error;
-    const html = buildHtml(this.lastData, this.lastError);
 
     if (this.panel) {
-      this.panel.webview.html = html;
       this.panel.reveal(vscode.ViewColumn.One, true);
+      this.post();
       return;
     }
     this.panel = vscode.window.createWebviewPanel(
@@ -474,19 +624,21 @@ export class UsagePanel {
       { enableScripts: true, retainContextWhenHidden: false },
     );
     this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, "resources", "icon.png");
-    this.panel.webview.html = html;
+    // Register before the shell is written, so the webview's 'ready' can't race us.
     this.panel.webview.onDidReceiveMessage(async (msg) => {
-      if (msg.command === 'refresh') {
+      if (msg.command === 'ready') {
+        // Fresh webview load (first open, or a reload after being hidden).
+        this.post();
+      } else if (msg.command === 'refresh') {
         vscode.commands.executeCommand('claude-usage-monitor.refresh');
       } else if (msg.command === 'updateSetting') {
+        // The config listener re-posts once the write lands.
         await vscode.workspace.getConfiguration().update(
           msg.key, msg.value, vscode.ConfigurationTarget.Global
         );
-        if (this.panel) {
-          this.panel.webview.html = buildHtml(this.lastData, this.lastError);
-        }
       }
     });
+    this.panel.webview.html = buildShell();
     this.panel.onDidDispose(() => {
       this.panel = undefined;
     });
@@ -495,9 +647,7 @@ export class UsagePanel {
   public update(data: UsageData | null, error: string | null = null) {
     if (data) { this.lastData = data; }
     this.lastError = error;
-    if (this.panel) {
-      this.panel.webview.html = buildHtml(this.lastData, this.lastError);
-    }
+    this.post();
   }
 
   public dispose() {
