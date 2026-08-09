@@ -7,11 +7,13 @@ import { UsageData, UsageLimit } from './types';
  * bars, colour sources — works from these, so nothing hardcodes a model name.
  */
 export interface QuotaWindow {
-	key:      string;        // address: '5h' | '7d' | 'model:Fable' | <kind>
+	key:      string;        // address: '5h' | '7d' | 'model:Fable' | 'extra' | <kind>
 	name:     string;        // short, for status bar text: '5h', '7d', 'Fable'
 	label:    string;        // long, for tooltips and panel rows
 	pct:      number;
 	resetsAt: string | null;
+	/** Only on the pay-as-you-go window, which is measured in money. */
+	money?:   { spent: string; limit: string | null };
 }
 
 export function limitLabel(l: UsageLimit): string {
@@ -88,6 +90,27 @@ export function allWindows(data: UsageData): QuotaWindow[] {
 	if (data.sevenDayOpus)      { push({ key: 'model:Opus',   name: 'Opus',   label: '7-Day Opus',   pct: data.sevenDayOpus.utilization,      resetsAt: data.sevenDayOpus.resetsAt }); }
 	if (data.sevenDayOauthApps) { push({ key: 'oauth_apps', name: 'OAuth', label: '7-Day OAuth Apps', pct: data.sevenDayOauthApps.utilization, resetsAt: data.sevenDayOauthApps.resetsAt }); }
 
+	// Pay-as-you-go. Measured in money rather than a percentage of a quota, so
+	// the percentage is derived from the monthly cap when the API omits it.
+	const eu = data.extraUsage;
+	if (eu?.isEnabled) {
+		const spentCents = eu.usedCredits ?? 0;
+		const pct = eu.utilization !== null
+			? eu.utilization
+			: (eu.monthlyLimit ? (spentCents / eu.monthlyLimit) * 100 : 0);
+		push({
+			key:      'extra',
+			name:     'extra',
+			label:    'Extra Usage',
+			pct,
+			resetsAt: null,
+			money: {
+				spent: `$${(spentCents / 100).toFixed(2)}`,
+				limit: eu.monthlyLimit !== null ? `$${(eu.monthlyLimit / 100).toFixed(2)}` : null,
+			},
+		});
+	}
+
 	return out;
 }
 
@@ -108,7 +131,7 @@ function miniBar(pct: number): string {
 	return '█'.repeat(filled) + '░'.repeat(10 - filled);
 }
 
-const FIELDS = ['pct', 'reset', 'resetAt', 'name', 'bar'] as const;
+const FIELDS = ['pct', 'reset', 'resetAt', 'name', 'bar', 'spent', 'limit'] as const;
 
 function fieldValue(w: QuotaWindow, field: string): string {
 	switch (field) {
@@ -117,6 +140,8 @@ function fieldValue(w: QuotaWindow, field: string): string {
 		case 'reset':   return w.resetsAt ? formatTimeRemaining(w.resetsAt) : '';
 		case 'resetAt': return w.resetsAt ? formatResetAbsolute(w.resetsAt) : '';
 		case 'bar':     return miniBar(w.pct);
+		case 'spent':   return w.money?.spent ?? '';
+		case 'limit':   return w.money?.limit ?? '';
 		default:        return '';
 	}
 }
@@ -162,7 +187,9 @@ function collapse(s: string): string {
 		else if (isDecorationOnly(out) || isDecorationOnly(part)) { out += ` ${part}`; }
 		else { out += ` · ${part}`; }
 	}
-	return out;
+	// An empty token can also strand a literal separator the user typed, as in
+	// "{extra.spent} / {extra.limit}" on an account with no monthly cap.
+	return out.replace(/^[\s·/|,-]+/, '').replace(/[\s·/|,-]+$/, '');
 }
 
 export function renderTemplate(template: string, data: UsageData | null): string {
@@ -189,6 +216,12 @@ export function presets(data: UsageData | null): Preset[] {
 	for (const w of data ? allWindows(data) : []) {
 		if (w.key.startsWith('model:')) {
 			out.push({ id: w.key, label: w.name, template: `{icon} ${w.name} {${w.key}.pct} · {${w.key}.reset}` });
+		} else if (w.key === 'extra') {
+			out.push({
+				id: 'extra',
+				label: 'Extra usage',
+				template: w.money?.limit ? '{icon} {extra.spent} / {extra.limit}' : '{icon} {extra.spent}',
+			});
 		}
 	}
 	return out;

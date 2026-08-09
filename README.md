@@ -34,7 +34,7 @@ Colors:
 
 ### Customising the text
 
-The status bar is driven by a format template, `claude-usage-monitor.statusBarFormat`. Windows are addressed as `{5h.…}`, `{7d.…}`, `{max.…}` (whichever window is highest right now) or `{model:<display name>.…}` — the last one resolves against whatever models your account reports, so a new tier is addressable without a new release.
+The status bar is driven by a format template, `claude-usage-monitor.statusBarFormat`. Windows are addressed as `{5h.…}`, `{7d.…}`, `{extra.…}` (pay-as-you-go), `{max.…}` (whichever window is highest right now) or `{model:<display name>.…}` — the last one resolves against whatever models your account reports, so a new tier is addressable without a new release.
 
 | Template | Renders |
 | --- | --- |
@@ -43,8 +43,11 @@ The status bar is driven by a format template, `claude-usage-monitor.statusBarFo
 | `{icon} Fable {model:Fable.pct}` | `Fable 91%` |
 | `{icon} {max.name} {max.pct}` | `Fable 91%` — follows whichever window is worst |
 | `{icon} {5h.bar} {5h.pct}` | `█░░░░░░░░░ 12%` |
+| `{icon} {extra.spent} / {extra.limit}` | `$12.50 / $40.00` |
 
-Fields are `.pct`, `.reset`, `.resetAt`, `.name` and `.bar`. `{icon}` inserts the Claude mark and `{{`/`}}` escape literal braces. A token naming a window your account doesn't report renders empty, and the leftover separator is removed rather than left dangling.
+Fields are `.pct`, `.reset`, `.resetAt`, `.name` and `.bar`, plus `.spent` and `.limit` on the pay-as-you-go window. `{icon}` inserts the Claude mark and `{{`/`}}` escape literal braces.
+
+A token naming a window your account doesn't report renders empty, and the separator it stranded is removed rather than left dangling — so `{extra.spent} / {extra.limit}` shows just `$7.00` when no monthly cap is set, and pay-as-you-go tokens disappear entirely when credits are off.
 
 The usage panel's **Settings** tab has presets, a live preview, and a checkbox per window for `claude-usage-monitor.statusBarColorFrom`, which colours the bar from the highest of the windows you check (default: the 5-hour and 7-day windows).
 

@@ -542,7 +542,13 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 }
 .sb-icon { flex-shrink: 0; }
 .check { display: flex; align-items: center; gap: 6px; font-size: 12px; cursor: pointer; }
-.check input { cursor: pointer; margin: 0; }
+/* Native checkboxes default to the browser accent (purple), which reads as
+   foreign in every VS Code theme — match the panel's own accent instead. */
+.check input {
+	cursor: pointer;
+	margin: 0;
+	accent-color: #C15F3C;
+}
 .threshold-wrap { display: flex; align-items: center; gap: 4px; }
 .threshold-pct { font-size: 12px; color: var(--vscode-descriptionForeground); }
 .color-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
@@ -619,6 +625,7 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 			else if (bare(out) === '' || bare(parts[i]) === '') { out += ' ' + parts[i]; }
 			else { out += ' · ' + parts[i]; }
 		}
+		out = out.replace(/^[\\s·/|,-]+/, '').replace(/[\\s·/|,-]+$/, '');
 		return esc(out).split(ICON_MARK).join(ICON_SVG);
 	}
 

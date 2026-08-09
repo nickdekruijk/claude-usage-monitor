@@ -87,20 +87,17 @@ export class StatusBarManager {
 
 		const lines: string[] = [`$(claude-icon) **Claude Usage**`, `---`];
 
-		// One entry per window the account reports, per-model included.
+		// One entry per window the account reports — per-model and pay-as-you-go
+		// included, since they all come from the same normalised list.
 		for (const w of windows) {
-			lines.push(
-				w.resetsAt
-					? `**${w.label}**\n\n\`${bar(w.pct)}\`\n\n↻ Resets in **${formatTimeRemaining(w.resetsAt)}**`
-					: `**${w.label}**\n\n\`${bar(w.pct)}\``,
-			);
-		}
-
-		const eu = data.extraUsage;
-		if (eu?.isEnabled && eu.usedCredits !== null) {
-			const spent = (eu.usedCredits / 100).toFixed(2);
-			const cap   = eu.monthlyLimit !== null ? ` / $${(eu.monthlyLimit / 100).toFixed(2)}` : '';
-			lines.push(`**Extra Usage**  💳 $${spent}${cap} ${eu.currency ?? ''}`);
+			if (w.money) {
+				const cap = w.money.limit ? ` / ${w.money.limit}` : '';
+				lines.push(`**${w.label}**  💳 ${w.money.spent}${cap} ${data.extraUsage?.currency ?? ''}`.trim());
+			} else if (w.resetsAt) {
+				lines.push(`**${w.label}**\n\n\`${bar(w.pct)}\`\n\n↻ Resets in **${formatTimeRemaining(w.resetsAt)}**`);
+			} else {
+				lines.push(`**${w.label}**\n\n\`${bar(w.pct)}\``);
+			}
 		}
 
 		if (error) {
