@@ -51,6 +51,20 @@ A token naming a window your account doesn't report renders empty, and the separ
 
 The usage panel's **Settings** tab has presets, a live preview, and a checkbox per window for `claude-usage-monitor.statusBarColorFrom`, which colours the bar from the highest of the windows you check (default: the 5-hour and 7-day windows).
 
+### When a window runs out
+
+At 100% the format is set aside — the only thing that matters then is when you can resume — and the status bar reads `blocked · 47m`, or `Fable blocked · Sun 4:29 AM` for a per-model window. If several are exhausted it shows the one resetting soonest. The panel marks those bars **Exhausted — resets in …**.
+
+### Notifications
+
+A red status bar is easy to miss mid-file, so `claude-usage-monitor.notifications` announces threshold crossings:
+
+- `error` *(default)* — at the error threshold, and again when a window is exhausted
+- `all` — also at the warning threshold
+- `off` — never
+
+Each window notifies **at most once per reset cycle**, escalating only if it gets worse (warning → error → exhausted), so it never repeats on every poll.
+
 ## Usage Panel
 
 ![Usage detail panel](resources/image3.png)

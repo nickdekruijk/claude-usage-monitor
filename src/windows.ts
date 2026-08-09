@@ -118,6 +118,20 @@ function highest(windows: QuotaWindow[]): QuotaWindow | null {
 	return windows.reduce<QuotaWindow | null>((a, b) => (!a || b.pct > a.pct ? b : a), null);
 }
 
+/**
+ * The exhausted window the user is most likely waiting on — soonest reset
+ * first, since that is the one that decides when work can resume.
+ */
+export function blockedWindow(data: UsageData): QuotaWindow | null {
+	const blocked = allWindows(data).filter((w) => w.pct >= 100);
+	if (blocked.length === 0) { return null; }
+	return blocked.sort((a, b) => {
+		if (!a.resetsAt) { return 1; }
+		if (!b.resetsAt) { return -1; }
+		return new Date(a.resetsAt).getTime() - new Date(b.resetsAt).getTime();
+	})[0];
+}
+
 /** Look up one window by address. 'max' resolves to whichever is highest now. */
 export function resolveWindow(data: UsageData, key: string): QuotaWindow | null {
 	const k = key.trim().toLowerCase();

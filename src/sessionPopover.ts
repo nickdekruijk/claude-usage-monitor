@@ -90,10 +90,19 @@ function formatResetDate(iso: string): string {
   return d.toLocaleString();
 }
 
+/** Left-hand meta line: exhausted windows say so instead of counting down. */
+function resetMeta(resetsAt: string | null, pct: number): string {
+  const exhausted = pct >= 100;
+  if (!resetsAt) { return exhausted ? `<span class="exhausted">Exhausted</span>` : `<span></span>`; }
+  const left = formatTimeRemaining(resetsAt);
+  return exhausted
+    ? `<span class="exhausted">Exhausted — resets in ${left}</span>`
+    : `<span>Resets in ${left}</span>`;
+}
+
 function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: number): string {
   const pct = bucket.utilization;
   const color = barColor(pct, warnT, errT);
-  const timeLeft = formatTimeRemaining(bucket.resetsAt);
   const resetsDate = formatResetDate(bucket.resetsAt);
   return `
 			<div class="bucket">
@@ -103,7 +112,7 @@ function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: numb
 				</div>
 				<div class="progress"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
 				<div class="bucket-meta">
-					<span>Resets in ${timeLeft}</span>
+					${resetMeta(bucket.resetsAt, pct)}
 					<span>${resetsDate}</span>
 				</div>
 			</div>`;
@@ -123,9 +132,7 @@ function limitRow(l: UsageLimit, warnT: number, errT: number): string {
   const tColor = barColor(pct, warnT, errT);
   const sColor = severityColor(l.severity);
   const color = sColor && rank(sColor) > rank(tColor) ? sColor : tColor;
-  const meta = l.resetsAt
-    ? `<span>Resets in ${formatTimeRemaining(l.resetsAt)}</span><span>${formatResetDate(l.resetsAt)}</span>`
-    : `<span></span><span></span>`;
+  const meta = `${resetMeta(l.resetsAt, pct)}<span>${l.resetsAt ? formatResetDate(l.resetsAt) : ""}</span>`;
   return `
 			<div class="bucket">
 				<div class="bucket-header">
@@ -435,6 +442,7 @@ h2 { font-size: 16px; font-weight: 600; margin-bottom: 14px; }
 .label { color: var(--vscode-descriptionForeground); }
 .value { font-weight: 600; }
 .no-quota { color: var(--vscode-descriptionForeground); font-size: 12px; font-style: italic; }
+.exhausted { color: #ff6b6b; font-weight: 600; }
 hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16px 0; }
 .refresh-btn {
 	background: none;

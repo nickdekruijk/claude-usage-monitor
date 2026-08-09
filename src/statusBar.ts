@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { UsageData } from './types';
 import {
 	allWindows,
+	blockedWindow,
 	colorPct,
 	formatTimeRemaining,
 	readColorSources,
@@ -72,12 +73,21 @@ export class StatusBarManager {
 
 		const { format, colorSources, warningThreshold, errorThreshold } = readConfig();
 
-		const body = renderTemplate(format, data);
-		this.item.text = `${body || '$(claude-icon)'}${error ? ' $(warning)' : ''}`;
-
-		this.item.backgroundColor = error
-			? new vscode.ThemeColor('statusBarItem.warningBackground')
-			: utilizationColor(colorPct(data, colorSources), warningThreshold, errorThreshold);
+		// Being blocked is the one state worth overriding a custom format for:
+		// the only thing that matters then is when work can resume.
+		const blocked = blockedWindow(data);
+		if (blocked) {
+			const what = blocked.key === '5h' ? 'blocked' : `${blocked.name} blocked`;
+			const when = blocked.resetsAt ? ` · ${formatTimeRemaining(blocked.resetsAt)}` : '';
+			this.item.text = `$(claude-icon) ${what}${when}${error ? ' $(warning)' : ''}`;
+			this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+		} else {
+			const body = renderTemplate(format, data);
+			this.item.text = `${body || '$(claude-icon)'}${error ? ' $(warning)' : ''}`;
+			this.item.backgroundColor = error
+				? new vscode.ThemeColor('statusBarItem.warningBackground')
+				: utilizationColor(colorPct(data, colorSources), warningThreshold, errorThreshold);
+		}
 
 		const bar = (p: number) => {
 			const filled = Math.round(Math.min(p, 100) / 10);

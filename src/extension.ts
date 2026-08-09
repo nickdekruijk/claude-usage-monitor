@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { fetchUsageData } from './usageClient';
 import { StatusBarManager } from './statusBar';
 import { UsagePanel } from './sessionPopover';
+import { maybeNotify } from './notifications';
 import { UsageData } from './types';
 
 const POLL_INTERVAL_MS = 2  * 60_000; // 2 minutes
@@ -48,6 +49,7 @@ export function activate(context: vscode.ExtensionContext) {
 		if (currentData) {
 			statusBar.update(currentData, error);
 			panel.update(currentData, error);
+			void maybeNotify(context.globalState, currentData);
 		} else {
 			statusBar.showError(error ?? 'Unknown error');
 			panel.update(null, error);

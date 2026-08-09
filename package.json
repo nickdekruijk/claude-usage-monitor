@@ -79,6 +79,21 @@
           ],
           "markdownDescription": "Which windows drive the status bar background color — it turns orange/red when the highest of them crosses a threshold. Use window addresses: `5h`, `7d`, `model:<display name>`, or `*` for every window the account reports.\n\nExample: `[\"5h\", \"7d\", \"model:Fable\"]`.\n\nLegacy string values (`max`, `5h`, `7d`, `model:…`) are still honored."
         },
+        "claude-usage-monitor.notifications": {
+          "type": "string",
+          "enum": [
+            "off",
+            "error",
+            "all"
+          ],
+          "enumDescriptions": [
+            "Never show notifications",
+            "Notify at the error threshold and when a window is exhausted (default)",
+            "Also notify at the warning threshold"
+          ],
+          "default": "error",
+          "markdownDescription": "Show a notification when a quota window crosses a threshold. Each window notifies at most once per reset cycle, so this never repeats on every poll."
+        },
         "claude-usage-monitor.warningThreshold": {
           "type": "number",
           "default": 60,
