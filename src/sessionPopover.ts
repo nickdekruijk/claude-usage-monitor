@@ -1,6 +1,16 @@
 import * as vscode from "vscode";
 import { UsageData, QuotaBucket, UsageLimit } from "./types";
 import {
+  Burn,
+  Store as HistoryStore,
+  bindingWindow,
+  burnFor,
+  getStore,
+  historyEnabled,
+  sampleCount,
+  seriesFor,
+} from "./history";
+import {
   allWindows,
   limitLabel,
   presets,
@@ -90,6 +100,72 @@ function formatResetDate(iso: string): string {
   return d.toLocaleString();
 }
 
+/**
+ * Emits the timestamp for the webview to format, rather than formatting here.
+ * Under Remote SSH / WSL / devcontainers the extension host is the *remote*
+ * machine, so formatting server-side would print the server's clock — three
+ * hours wrong is worse than useless for a "you run out at" time.
+ */
+function etaSpan(ms: number): string {
+  return `<span class="eta" data-eta="${ms}"></span>`;
+}
+
+/**
+ * Sparkline plus rate for one bar. Renders nothing until there is enough
+ * history to say something true — a wrong ETA is worse than no ETA.
+ */
+const SPARK_W = 118;
+const SPARK_H = 26;
+
+/**
+ * A small line chart of the window's history. Scaled to the series' own range
+ * rather than to 100, so a session between 2% and 23% still shows its shape;
+ * a genuinely flat series draws a flat line near the baseline.
+ */
+function sparkSvg(points: number[], color: string): string {
+  if (points.length < 2) {
+    return `<svg class="spark" width="${SPARK_W}" height="${SPARK_H}" aria-hidden="true"></svg>`;
+  }
+
+  const lo = Math.min(...points);
+  const hi = Math.max(...points);
+  const flat = hi - lo < 1;
+  const top = 3;
+  const bottom = SPARK_H - 4;
+  const yOf = (v: number) => (flat ? bottom : bottom - ((v - lo) / (hi - lo)) * (bottom - top));
+  const xOf = (i: number) => 1 + (i / (points.length - 1)) * (SPARK_W - 2);
+
+  const line = points.map((v, i) => `${i ? "L" : "M"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+  const area = `${line} L${(SPARK_W - 1).toFixed(1)},${SPARK_H} L1,${SPARK_H} Z`;
+  const lastX = xOf(points.length - 1).toFixed(1);
+  const lastY = yOf(points[points.length - 1]).toFixed(1);
+
+  return `<svg class="spark" width="${SPARK_W}" height="${SPARK_H}" viewBox="0 0 ${SPARK_W} ${SPARK_H}" aria-hidden="true">
+					<path d="${area}" fill="${color}" opacity="0.13"/>
+					<path d="${line}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+					<circle cx="${lastX}" cy="${lastY}" r="2" fill="${color}"/>
+				</svg>`;
+}
+
+function burnRow(spark: string, burn: Burn | null, resetsAt: string | null, samples: number): string {
+  // Nothing recorded yet for this window — say nothing rather than show an
+  // empty chart. Once there is any history, always show the row so the feature
+  // is visibly working while it gathers enough data to project.
+  if (samples === 0) { return ""; }
+
+  let note: string;
+  if (burn && burn.ratePerHour === 0) {
+    note = "idle";
+  } else if (burn && burn.etaAt !== null) {
+    const rate = `${burn.ratePerHour.toFixed(burn.ratePerHour < 10 ? 1 : 0)} %/hr`;
+    const beatsReset = resetsAt !== null && burn.etaAt >= new Date(resetsAt).getTime();
+    note = beatsReset ? `${rate} · resets first` : `${rate} · out ~${etaSpan(burn.etaAt)}`;
+  } else {
+    note = "measuring…";
+  }
+  return `<div class="burn">${spark}<span>${note}</span></div>`;
+}
+
 /** Left-hand meta line: exhausted windows say so instead of counting down. */
 function resetMeta(resetsAt: string | null, pct: number): string {
   const exhausted = pct >= 100;
@@ -100,7 +176,7 @@ function resetMeta(resetsAt: string | null, pct: number): string {
     : `<span>Resets in ${left}</span>`;
 }
 
-function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: number): string {
+function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: number, burn = ""): string {
   const pct = bucket.utilization;
   const color = barColor(pct, warnT, errT);
   const resetsDate = formatResetDate(bucket.resetsAt);
@@ -114,7 +190,7 @@ function bucketRow(label: string, bucket: QuotaBucket, warnT: number, errT: numb
 				<div class="bucket-meta">
 					${resetMeta(bucket.resetsAt, pct)}
 					<span>${resetsDate}</span>
-				</div>
+				</div>${burn}
 			</div>`;
 }
 
@@ -125,7 +201,7 @@ function severityColor(severity: string | null): string | null {
   return null; // "normal", null, or unknown → use thresholds
 }
 
-function limitRow(l: UsageLimit, warnT: number, errT: number): string {
+function limitRow(l: UsageLimit, warnT: number, errT: number, burn = ""): string {
   const pct = l.percent;
   // Severity can only escalate past the thresholds, never downgrade them
   const rank = (c: string) => c === "#ff6b6b" ? 2 : c === "#ffd93d" ? 1 : 0;
@@ -140,7 +216,7 @@ function limitRow(l: UsageLimit, warnT: number, errT: number): string {
 					<span class="bucket-pct" style="color:${color}">${pct.toFixed(0)}%</span>
 				</div>
 				<div class="progress"><div class="fill" style="width:${Math.min(pct, 100)}%;background:${color}"></div></div>
-				<div class="bucket-meta">${meta}</div>
+				<div class="bucket-meta">${meta}</div>${burn}
 			</div>`;
 }
 
@@ -184,8 +260,37 @@ interface PanelState {
  * is never replaced — the active tab, the scroll position, and any control the
  * user is mid-edit all survive a poll.
  */
-function buildFragments(data: UsageData | null, error: string | null): PanelState {
+function buildFragments(data: UsageData | null, error: string | null, store: HistoryStore): PanelState {
   const { warnT, errT, clockFmt } = readPanelConfig();
+
+  // Burn rate per window, addressed by the same keys allWindows() uses.
+  const burnByKey = new Map<string, string>();
+  if (data && historyEnabled()) {
+    for (const w of allWindows(data)) {
+      const pct = w.pct;
+      burnByKey.set(
+        w.key,
+        burnRow(
+          sparkSvg(seriesFor(store, w), barColor(pct, warnT, errT)),
+          burnFor(store, w),
+          w.resetsAt,
+          sampleCount(store, w),
+        ),
+      );
+    }
+  }
+  const burnOf = (key: string) => burnByKey.get(key) ?? "";
+  const keyOfLimit = (l: UsageLimit) =>
+    l.modelName ? `model:${l.modelName}` : l.kind === "session" ? "5h" : l.kind === "weekly_all" ? "7d" : l.kind;
+
+  const binding = data && historyEnabled() ? bindingWindow(store, data) : null;
+  const headline = binding
+    ? `<div class="burn-headline">⚠ ${escapeHtml(binding.window.label)} projected to run out ~${etaSpan(binding.burn.etaAt!)}, before it resets</div>`
+    : "";
+  // Trend lines and projections are new; say so where they are actually shown.
+  const betaNote = burnByKey.size > 0
+    ? `<div class="burn-beta"><span class="badge">Beta</span> Trend lines and run-out estimates are new — treat the projections as a rough guide.</div>`
+    : "";
 
   let errorHtml = "";
   if (error) {
@@ -223,20 +328,20 @@ function buildFragments(data: UsageData | null, error: string | null): PanelStat
   const limits = data ? sortLimits(data.limits ?? []) : [];
   const buckets: string[] = [];
   if (data && limits.length > 0) {
-    for (const l of limits) { buckets.push(limitRow(l, warnT, errT)); }
+    for (const l of limits) { buckets.push(limitRow(l, warnT, errT, burnOf(keyOfLimit(l)))); }
     // Legacy windows with no equivalent limits entry (e.g. OAuth apps)
-    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
+    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT, burnOf("oauth_apps"))); }
   } else if (data) {
-    if (data.fiveHour)          { buckets.push(bucketRow("5-Hour Window",    data.fiveHour,          warnT, errT)); }
-    if (data.sevenDay)          { buckets.push(bucketRow("7-Day Window",     data.sevenDay,          warnT, errT)); }
-    if (data.sevenDaySonnet)    { buckets.push(bucketRow("7-Day Sonnet",     data.sevenDaySonnet,    warnT, errT)); }
-    if (data.sevenDayOpus)      { buckets.push(bucketRow("7-Day Opus",       data.sevenDayOpus,      warnT, errT)); }
-    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT)); }
+    if (data.fiveHour)          { buckets.push(bucketRow("5-Hour Window",    data.fiveHour,          warnT, errT, burnOf("5h"))); }
+    if (data.sevenDay)          { buckets.push(bucketRow("7-Day Window",     data.sevenDay,          warnT, errT, burnOf("7d"))); }
+    if (data.sevenDaySonnet)    { buckets.push(bucketRow("7-Day Sonnet",     data.sevenDaySonnet,    warnT, errT, burnOf("model:Sonnet"))); }
+    if (data.sevenDayOpus)      { buckets.push(bucketRow("7-Day Opus",       data.sevenDayOpus,      warnT, errT, burnOf("model:Opus"))); }
+    if (data.sevenDayOauthApps) { buckets.push(bucketRow("7-Day OAuth Apps", data.sevenDayOauthApps, warnT, errT, burnOf("oauth_apps"))); }
   }
 
-  const bucketsHtml = buckets.length > 0
+  const bucketsHtml = betaNote + headline + (buckets.length > 0
     ? buckets.join("")
-    : `<div class="no-quota">${data ? "No active quota windows returned." : "Fetching usage from the Anthropic API…"}</div>`;
+    : `<div class="no-quota">${data ? "No active quota windows returned." : "Fetching usage from the Anthropic API…"}</div>`);
 
   const sel = (val: string, opt: string) => val === opt ? ' selected' : '';
 
@@ -307,6 +412,10 @@ function buildFragments(data: UsageData | null, error: string | null): PanelStat
 
 	<div class="settings-group last-group">
 		<div class="settings-group-title">Panel</div>
+		<div class="setting-row">
+			<span class="setting-label">Burn rate <span class="beta-tag">(Beta)</span> <span class="info-icon" title="Beta. Keeps a short local history of your usage to draw a trend line, estimate how fast each window is being consumed, and project when it will run out. Stored only on this machine, capped at 64 KB, and deleted when switched off.">ⓘ</span></span>
+			<label class="check"><input type="checkbox"${historyEnabled() ? " checked" : ""} onchange="updateSetting('claude-usage-monitor.burnRate', this.checked)"> Track usage history</label>
+		</div>
 		<div class="setting-row">
 			<span class="setting-label">Clock format <span class="info-icon" title="How reset times are displayed in this panel. 'Auto' follows your system locale.">ⓘ</span></span>
 			<select class="setting-control" onchange="updateSetting('claude-usage-monitor.clockFormat', this.value)">
@@ -443,6 +552,42 @@ h2 { font-size: 16px; font-weight: 600; margin-bottom: 14px; }
 .value { font-weight: 600; }
 .no-quota { color: var(--vscode-descriptionForeground); font-size: 12px; font-style: italic; }
 .exhausted { color: #ff6b6b; font-weight: 600; }
+.burn {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+.spark { flex-shrink: 0; display: block; overflow: visible; }
+.beta-tag { color: #C15F3C; font-weight: 600; }
+.badge {
+	font-size: 9px;
+	font-weight: 700;
+	letter-spacing: 0.06em;
+	text-transform: uppercase;
+	color: #C15F3C;
+	border: 1px solid #C15F3C;
+	border-radius: 3px;
+	padding: 0 4px;
+	vertical-align: 1px;
+}
+.burn-beta {
+	grid-column: 1 / -1;
+	margin-bottom: 10px;
+	font-size: 11px;
+	color: var(--vscode-descriptionForeground);
+}
+.burn-headline {
+	grid-column: 1 / -1;
+	margin-bottom: 14px;
+	padding: 7px 11px;
+	background: #ffd93d18;
+	border-left: 3px solid #ffd93d;
+	border-radius: 4px;
+	font-size: 12px;
+}
 hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16px 0; }
 .refresh-btn {
 	background: none;
@@ -683,6 +828,20 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 		document.getElementById('tab-' + next).focus();
 	});
 
+	// Projected times arrive as epoch ms and are formatted here, in the viewer's
+	// own timezone — the extension host may be a remote machine.
+	function formatEtas(root) {
+		var els = root.querySelectorAll('[data-eta]');
+		for (var i = 0; i < els.length; i++) {
+			var ms = Number(els[i].getAttribute('data-eta'));
+			if (!isFinite(ms)) { continue; }
+			var d = new Date(ms);
+			els[i].textContent = (ms - Date.now() < 20 * 3600000)
+				? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
+				: d.toLocaleString(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' });
+		}
+	}
+
 	// Never redraw a control while the user is editing it.
 	function settingsFocused() {
 		var el = document.activeElement;
@@ -695,7 +854,9 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 		TOKENS = m.tokens || {};
 		document.getElementById('subtitle').innerHTML      = m.subtitle;
 		document.getElementById('error-banner').innerHTML  = m.errorHtml;
-		document.getElementById('quota-windows').innerHTML = m.bucketsHtml;
+		var quota = document.getElementById('quota-windows');
+		quota.innerHTML = m.bucketsHtml;
+		formatEtas(quota);
 		document.getElementById('extra-usage').innerHTML   = m.extraHtml;
 		if (!settingsFocused()) {
 			document.getElementById('settings-content').innerHTML = m.settingsHtml;
@@ -717,7 +878,7 @@ export class UsagePanel {
   private lastError: string | null = null;
   private configSub: vscode.Disposable;
 
-  constructor(private extensionUri: vscode.Uri) {
+  constructor(private extensionUri: vscode.Uri, private memento: vscode.Memento) {
     this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('claude-usage-monitor')) { this.post(); }
     });
@@ -729,7 +890,9 @@ export class UsagePanel {
    * and wipe whatever the user was typing into a settings field.
    */
   private post() {
-    this.panel?.webview.postMessage(buildFragments(this.lastData, this.lastError));
+    this.panel?.webview.postMessage(
+      buildFragments(this.lastData, this.lastError, getStore(this.memento)),
+    );
   }
 
   public show(data: UsageData | null, error: string | null = null) {

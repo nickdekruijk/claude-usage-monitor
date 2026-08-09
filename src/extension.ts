@@ -3,6 +3,7 @@ import { fetchUsageData } from './usageClient';
 import { StatusBarManager } from './statusBar';
 import { UsagePanel } from './sessionPopover';
 import { maybeNotify } from './notifications';
+import { recordHistory } from './history';
 import { UsageData } from './types';
 
 const POLL_INTERVAL_MS = 2  * 60_000; // 2 minutes
@@ -33,9 +34,28 @@ function reviveCache(raw: CacheEntry | undefined): CacheEntry | null {
 	return raw;
 }
 
+/**
+ * Keys written by earlier versions. Bumping a key's version orphans the old
+ * blob, which would otherwise sit in global storage forever.
+ */
+const LEGACY_KEYS = [
+	'claudeUsage.cache',
+	'claudeUsage.history.v1',
+	'claudeUsage.history.v2',
+	'claudeUsage.notified.v1',
+];
+
+function dropLegacyKeys(memento: vscode.Memento) {
+	for (const key of LEGACY_KEYS) {
+		if (memento.get(key) !== undefined) { void memento.update(key, undefined); }
+	}
+}
+
 export function activate(context: vscode.ExtensionContext) {
+	dropLegacyKeys(context.globalState);
+
 	const statusBar = new StatusBarManager();
-	const panel     = new UsagePanel(context.extensionUri);
+	const panel     = new UsagePanel(context.extensionUri, context.globalState);
 
 	let currentData:  UsageData | null = null;
 	let currentError: string | null    = null;
@@ -47,6 +67,8 @@ export function activate(context: vscode.ExtensionContext) {
 		if (data) { currentData = data; } // keep last good data on error
 		currentError = error;
 		if (currentData) {
+			// Record before rendering so the panel sees this poll in its history.
+			recordHistory(context.globalState, currentData);
 			statusBar.update(currentData, error);
 			panel.update(currentData, error);
 			void maybeNotify(context.globalState, currentData);

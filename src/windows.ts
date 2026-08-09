@@ -50,6 +50,28 @@ export function formatTimeRemaining(resetsAt: string): string {
 	return h > 0 ? `${h}h ${m}m` : `${m}m`;
 }
 
+export function resetMs(resetsAt: string | null): number | null {
+	if (!resetsAt) { return null; }
+	const t = new Date(resetsAt).getTime();
+	return isNaN(t) ? null : t;
+}
+
+/** A real reset moves `resets_at` by hours; anything smaller is noise. */
+export const CYCLE_TOLERANCE_MS = 5 * 60_000;
+
+/**
+ * Whether two reset times describe the same cycle.
+ *
+ * The API re-serialises `resets_at` slightly differently on every response —
+ * 19:09:59.948758 one poll, 19:10:00.302121 the next — describing one reset
+ * that happens to sit on a minute boundary. Snapping to any fixed grid just
+ * moves the boundary; comparing with a tolerance removes it.
+ */
+export function sameCycle(a: number | null, b: number | null): boolean {
+	if (a === null || b === null) { return a === b; }
+	return Math.abs(a - b) <= CYCLE_TOLERANCE_MS;
+}
+
 export function formatResetAbsolute(iso: string): string {
 	const d = new Date(iso);
 	const fmt = vscode.workspace.getConfiguration('claude-usage-monitor').get<string>('clockFormat', 'auto');

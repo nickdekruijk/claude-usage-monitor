@@ -2,7 +2,7 @@
   "name": "claude-code-usage-tracker",
   "displayName": "Claude Code Usage Tracker",
   "description": "Real-time monitoring of Claude Code token usage, cost tracking, and session management",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "publisher": "YahyaShareef",
   "icon": "resources/icon.png",
   "repository": {
@@ -78,6 +78,11 @@
             "7d"
           ],
           "markdownDescription": "Which windows drive the status bar background color — it turns orange/red when the highest of them crosses a threshold. Use window addresses: `5h`, `7d`, `model:<display name>`, or `*` for every window the account reports.\n\nExample: `[\"5h\", \"7d\", \"model:Fable\"]`.\n\nLegacy string values (`max`, `5h`, `7d`, `model:…`) are still honored."
+        },
+        "claude-usage-monitor.burnRate": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "**Beta.** Keep a short local history of your usage to draw a trend line for each quota window, estimate how fast it is being consumed, and project when it will run out. Treat the projections as a rough guide.\n\nOff by default because it is the only feature that records anything. The history never leaves your machine, is capped at 64 KB (typically ~5 KB), is discarded for each window when that window resets, and is deleted entirely when this is switched off."
         },
         "claude-usage-monitor.notifications": {
           "type": "string",

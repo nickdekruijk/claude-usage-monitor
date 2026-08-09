@@ -55,6 +55,16 @@ The usage panel's **Settings** tab has presets, a live preview, and a checkbox p
 
 At 100% the format is set aside — the only thing that matters then is when you can resume — and the status bar reads `blocked · 47m`, or `Fable blocked · Sun 4:29 AM` for a per-model window. If several are exhausted it shows the one resetting soonest. The panel marks those bars **Exhausted — resets in …**.
 
+### Burn rate — beta, off by default
+
+> **Beta.** Trend lines and run-out estimates are new. They are deliberately conservative, but treat the projections as a rough guide rather than a promise.
+
+Turn on **Track usage history** in the panel's Settings tab, or set `claude-usage-monitor.burnRate` to `true`, and each bar gains a trend line plus a reading like `13 %/hr · out ~11:47 PM` — or `resets first` when the window resets before you can exhaust it. If something really is projected to run out first, a banner names it above the bars.
+
+It stays quiet until it can be accurate: `measuring…` until there is enough movement to fit a line, and `idle` when a window genuinely is not moving.
+
+This is the only feature that records anything. The history is kept locally in VS Code's extension storage, capped at 64 KB (typically ~5 KB), thrown away per window whenever that window resets, and deleted outright when you switch it off.
+
 ### Notifications
 
 A red status bar is easy to miss mid-file, so `claude-usage-monitor.notifications` announces threshold crossings:
