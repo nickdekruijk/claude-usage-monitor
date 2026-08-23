@@ -5,25 +5,28 @@ import {
 	blockedWindow,
 	colorPct,
 	formatTimeRemaining,
+	IndicatorConfig,
+	Level,
+	levelOf,
 	readColorSources,
+	readIndicatorConfig,
 	readStatusBarFormat,
 	renderTemplate,
+	templateWithDot,
+	TOOLTIP_EMOJI,
 } from './windows';
 
 interface StatusBarConfig {
-	format:           string;
-	colorSources:     string[];
-	warningThreshold: number;
-	errorThreshold:   number;
+	format:       string;
+	colorSources: string[];
+	ind:          IndicatorConfig;
 }
 
 function readConfig(): StatusBarConfig {
-	const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
 	return {
-		format:           readStatusBarFormat(),
-		colorSources:     readColorSources(),
-		warningThreshold: cfg.get<number>('warningThreshold', 60),
-		errorThreshold:   cfg.get<number>('errorThreshold', 80),
+		format:       readStatusBarFormat(),
+		colorSources: readColorSources(),
+		ind:          readIndicatorConfig(),
 	};
 }
 
@@ -35,16 +38,24 @@ function timeAgo(date: Date): string {
 	return `${h} hour${h === 1 ? '' : 's'} ago`;
 }
 
-function utilizationColor(pct: number, warnT: number, errT: number): vscode.ThemeColor | undefined {
-	if (pct >= errT)  { return new vscode.ThemeColor('statusBarItem.errorBackground'); }
-	if (pct >= warnT) { return new vscode.ThemeColor('statusBarItem.warningBackground'); }
-	return undefined;
+const BACKGROUNDS: Record<Level, vscode.ThemeColor | undefined> = {
+	normal:  undefined,
+	warning: new vscode.ThemeColor('statusBarItem.warningBackground'),
+	error:   new vscode.ThemeColor('statusBarItem.errorBackground'),
+};
+
+/** A dotted identifier is a theme colour id; anything else is a literal CSS colour. */
+function themeOrCss(value: string): string | vscode.ThemeColor | undefined {
+	const v = value.trim();
+	if (!v) { return undefined; }
+	return /^[A-Za-z][A-Za-z0-9]*(\.[A-Za-z0-9]+)+$/.test(v) ? new vscode.ThemeColor(v) : v;
 }
 
 export class StatusBarManager {
 	private item: vscode.StatusBarItem;
 	private lastData:  UsageData | null = null;
 	private lastError: string | null    = null;
+	private lastFatal: string | null    = null;
 	private configSub: vscode.Disposable;
 
 	constructor() {
@@ -52,46 +63,71 @@ export class StatusBarManager {
 		this.item.command = 'claude-usage-monitor.showPopup';
 		this.item.show();
 
+		// Repaint on every settings change, including from the error state — a
+		// colour setting that only lands on the next poll reads as broken.
 		this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('claude-usage-monitor') && this.lastData) {
-				this.update(this.lastData, this.lastError);
-			}
+			if (!e.affectsConfiguration('claude-usage-monitor')) { return; }
+			if (this.lastFatal)     { this.showError(this.lastFatal); }
+			else if (this.lastData) { this.update(this.lastData, this.lastError); }
 		});
+	}
+
+	/**
+	 * Paint the level. VS Code overrides `color` whenever a background is set,
+	 * so a custom tint is only ours to give once the background is dropped —
+	 * and in emoji mode neither is touched: the glyph lives in the text.
+	 */
+	private applyIndicator(ind: IndicatorConfig, level: Level) {
+		if (ind.mode === 'background') {
+			this.item.backgroundColor = BACKGROUNDS[level];
+			this.item.color = undefined;
+			return;
+		}
+		this.item.backgroundColor = undefined;
+		this.item.color = ind.mode === 'text' ? themeOrCss(ind.colors[level]) : undefined;
 	}
 
 	public update(data: UsageData, error: string | null = null) {
 		this.lastData  = data;
 		this.lastError = error;
+		this.lastFatal = null;
 
 		const windows = allWindows(data);
 		if (windows.length === 0) {
 			this.item.text = '$(claude-icon) No data';
 			this.item.tooltip = 'No quota windows returned from API';
 			this.item.backgroundColor = undefined;
+			this.item.color = undefined;
 			return;
 		}
 
-		const { format, colorSources, warningThreshold, errorThreshold } = readConfig();
+		const { format, colorSources, ind } = readConfig();
 
 		// Being blocked is the one state worth overriding a custom format for:
 		// the only thing that matters then is when work can resume.
 		const blocked = blockedWindow(data);
+		const level: Level = blocked
+			? 'error'
+			: error
+				? 'warning'
+				: levelOf(colorPct(data, colorSources), ind.warnT, ind.errT);
+		const dot = ind.emoji[level] ?? '';
+
 		if (blocked) {
-			const what = blocked.key === '5h' ? 'blocked' : `${blocked.name} blocked`;
-			const when = blocked.resetsAt ? ` · ${formatTimeRemaining(blocked.resetsAt)}` : '';
-			this.item.text = `$(claude-icon) ${what}${when}${error ? ' $(warning)' : ''}`;
-			this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+			const what  = blocked.key === '5h' ? 'blocked' : `${blocked.name} blocked`;
+			const when  = blocked.resetsAt ? ` · ${formatTimeRemaining(blocked.resetsAt)}` : '';
+			const glyph = ind.mode === 'emoji' && dot ? ` ${dot}` : '';
+			this.item.text = `$(claude-icon) ${what}${when}${glyph}${error ? ' $(warning)' : ''}`;
 		} else {
-			const body = renderTemplate(format, data);
+			const body = renderTemplate(templateWithDot(format, ind.mode), data, { dot });
 			this.item.text = `${body || '$(claude-icon)'}${error ? ' $(warning)' : ''}`;
-			this.item.backgroundColor = error
-				? new vscode.ThemeColor('statusBarItem.warningBackground')
-				: utilizationColor(colorPct(data, colorSources), warningThreshold, errorThreshold);
 		}
+		this.applyIndicator(ind, level);
 
 		const bar = (p: number) => {
 			const filled = Math.round(Math.min(p, 100) / 10);
-			const color  = p >= errorThreshold ? '🔴' : p >= warningThreshold ? '🟡' : '🟢';
+			const lvl    = levelOf(p, ind.warnT, ind.errT);
+			const color  = ind.emoji[lvl] || TOOLTIP_EMOJI[lvl];
 			return `[${('█'.repeat(filled)).padEnd(10, '—')}] ${p.toFixed(0)}% ${color}`;
 		};
 
@@ -122,14 +158,19 @@ export class StatusBarManager {
 	}
 
 	public showInitializing() {
+		this.lastFatal = null;
 		this.item.text = '$(claude-icon) Connecting…';
 		this.item.tooltip = 'Fetching Claude usage data…';
 		this.item.backgroundColor = undefined;
+		this.item.color = undefined;
 	}
 
 	public showError(message: string) {
-		this.item.text = '$(claude-icon) Error';
-		this.item.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+		this.lastFatal = message;
+		const ind   = readIndicatorConfig();
+		const glyph = ind.mode === 'emoji' && ind.emoji.error ? ` ${ind.emoji.error}` : '';
+		this.item.text = `$(claude-icon) Error${glyph}`;
+		this.applyIndicator(ind, 'error');
 
 		let displayMsg = message;
 		let hint: string | null = null;

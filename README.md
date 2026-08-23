@@ -10,7 +10,7 @@ The extension authenticates using the OAuth token that Claude Code already store
 
 ## Features
 
-- **Status bar** — shows your 5-hour window utilization % and time until reset, color-coded green/yellow/red
+- **Status bar** — shows your 5-hour window utilization % and time until reset, with a warning/error indicator you can render as a background, tinted text, or an emoji
 - **Usage panel** — click the status bar to open a full panel with progress bars for every active quota window
 - **Extra usage** — displays pay-as-you-go credit spend if enabled on your account
 - **Zero config** — reads your existing Claude Code credentials automatically
@@ -27,10 +27,13 @@ The extension authenticates using the OAuth token that Claude Code already store
 - **2h 14m** — time until the 5-hour window resets
 - Hover for a tooltip with all active quota windows
 
-Colors:
-- Green — < 60%
-- Yellow — 60–80%
-- Red — > 80%
+Levels, with the default thresholds:
+
+- **Normal** — below 60%
+- **Warning** — 60–80%
+- **Error** — above 80%
+
+How the level is shown is up to you — background, tinted text, an emoji, or nothing at all. See [Choosing the indicator](#choosing-the-indicator).
 
 ### Customising the text
 
@@ -45,11 +48,39 @@ The status bar is driven by a format template, `claude-usage-monitor.statusBarFo
 | `{icon} {5h.bar} {5h.pct}` | `█░░░░░░░░░ 12%` |
 | `{icon} {extra.spent} / {extra.limit}` | `$12.50 / $40.00` |
 
-Fields are `.pct`, `.reset`, `.resetAt`, `.name` and `.bar`, plus `.spent` and `.limit` on the pay-as-you-go window. `{icon}` inserts the Claude mark and `{{`/`}}` escape literal braces.
+Fields are `.pct`, `.reset`, `.resetAt`, `.name` and `.bar`, plus `.spent` and `.limit` on the pay-as-you-go window. `{icon}` inserts the Claude mark, `{dot}` the threshold glyph, and `{{`/`}}` escape literal braces.
 
 A token naming a window your account doesn't report renders empty, and the separator it stranded is removed rather than left dangling — so `{extra.spent} / {extra.limit}` shows just `$7.00` when no monthly cap is set, and pay-as-you-go tokens disappear entirely when credits are off.
 
-The usage panel's **Settings** tab has presets, a live preview, and a checkbox per window for `claude-usage-monitor.statusBarColorFrom`, which colours the bar from the highest of the windows you check (default: the 5-hour and 7-day windows).
+The usage panel's **Settings** tab has presets, a live preview, and a checkbox per window for `claude-usage-monitor.statusBarColorFrom`, which drives the indicator from the highest of the windows you check (default: the 5-hour and 7-day windows).
+
+### Choosing the indicator
+
+`claude-usage-monitor.statusBarIndicator` decides how a crossed threshold shows up:
+
+| Value | Effect |
+| --- | --- |
+| `background` *(default)* | The theme's warning/error background, as before |
+| `text` | No background; the text is tinted from `claude-usage-monitor.statusBarColors` |
+| `emoji` | No background; a glyph from `claude-usage-monitor.statusBarEmoji` is appended |
+| `none` | No signal in the bar — the tooltip, panel and notifications still carry the level |
+
+VS Code allows an extension only two backgrounds, `statusBarItem.warningBackground` and `.errorBackground`, and picks the matching text colour itself. On a theme that sets a bright warning background against a pale warning foreground, the percentage is hard to read and no extension setting can override it. Dropping the background is what hands the colour back — which is what `text` and `emoji` do.
+
+`statusBarColors` takes, per level, either a theme colour id — `editorWarning.foreground`, `charts.red`, `terminal.ansiYellow`, which follow light and dark themes — or a literal CSS colour such as `#e5c100`. `statusBarEmoji` takes any text per level; `normal` is empty by default, because a permanent green dot in the bar is noise rather than information. Both are editable in the panel's **Settings** tab, with a live preview.
+
+The `{dot}` format token places the glyph yourself and works in every mode, so `{icon} {dot} {5h.pct}` pairs a glyph with a background if you want both.
+
+`background` mode paints with VS Code's own tokens rather than colours of ours, so restyling it means editing those tokens. The panel's **Settings** tab shows four fields for them — warning/error background and text — with a colour picker each; clearing a field restores the theme's own colour. They are written to `workbench.colorCustomizations`, which repaints **every** extension's status bar item, not only this one. VS Code resolves these itself and offers no way to scope them to a single item, which is exactly why `text` and `emoji` exist. By hand it looks like this:
+
+```jsonc
+"workbench.colorCustomizations": {
+  "[Default Dark Modern]": {
+    "statusBarItem.warningBackground": "#7A6400",
+    "statusBarItem.warningForeground": "#FFFFFF"
+  }
+}
+```
 
 ### When a window runs out
 

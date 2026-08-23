@@ -79,6 +79,71 @@
           ],
           "markdownDescription": "Which windows drive the status bar background color — it turns orange/red when the highest of them crosses a threshold. Use window addresses: `5h`, `7d`, `model:<display name>`, or `*` for every window the account reports.\n\nExample: `[\"5h\", \"7d\", \"model:Fable\"]`.\n\nLegacy string values (`max`, `5h`, `7d`, `model:…`) are still honored."
         },
+        "claude-usage-monitor.statusBarIndicator": {
+          "type": "string",
+          "enum": [
+            "background",
+            "text",
+            "emoji",
+            "none"
+          ],
+          "enumDescriptions": [
+            "Fill the item with the theme's warning/error background (current behaviour)",
+            "Leave the background alone and tint the text instead",
+            "Leave the colours alone and append a coloured emoji",
+            "No level signal in the status bar at all"
+          ],
+          "default": "background",
+          "markdownDescription": "How the status bar signals that a quota window has crossed a threshold.\n\n- `background` — the theme's warning/error background. VS Code allows extensions only these two colours and picks the matching text colour itself, so on some themes the contrast is poor.\n- `text` — no background; the text is tinted using `#claude-usage-monitor.statusBarColors#`.\n- `emoji` — no background; a glyph from `#claude-usage-monitor.statusBarEmoji#` is appended. Readable on every theme, and it still reads for colour-blind and screen-reader users.\n- `none` — no signal in the bar; the tooltip, panel and notifications still show the level.\n\nThe `{dot}` format token works in every mode, so you can place the emoji yourself — or combine it with a background.\n\nTo restyle `background` mode itself, edit VS Code's own tokens — the usage panel's Settings tab has a field and colour picker for each, or by hand: `\"workbench.colorCustomizations\": { \"statusBarItem.warningBackground\": \"#7A6400\", \"statusBarItem.warningForeground\": \"#FFFFFF\" }`. Either way that applies to every extension's status bar item, not only this one."
+        },
+        "claude-usage-monitor.statusBarColors": {
+          "type": "object",
+          "default": {
+            "normal": "",
+            "warning": "editorWarning.foreground",
+            "error": "editorError.foreground"
+          },
+          "properties": {
+            "normal": {
+              "type": "string",
+              "description": "Below the warning threshold. Empty leaves the status bar's own colour."
+            },
+            "warning": {
+              "type": "string",
+              "description": "At or above the warning threshold."
+            },
+            "error": {
+              "type": "string",
+              "description": "At or above the error threshold, and while a window is exhausted."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Text colours for `text` mode of `#claude-usage-monitor.statusBarIndicator#`. Each value is either a theme colour id — `editorWarning.foreground`, `charts.red`, `terminal.ansiYellow` — which follows light/dark themes, or a literal CSS colour such as `#e5c100`. Empty means the status bar's default colour."
+        },
+        "claude-usage-monitor.statusBarEmoji": {
+          "type": "object",
+          "default": {
+            "normal": "",
+            "warning": "\ud83d\udfe1",
+            "error": "\ud83d\udd34"
+          },
+          "properties": {
+            "normal": {
+              "type": "string",
+              "description": "Below the warning threshold. Empty by default — a permanent green dot is noise."
+            },
+            "warning": {
+              "type": "string",
+              "description": "At or above the warning threshold."
+            },
+            "error": {
+              "type": "string",
+              "description": "At or above the error threshold, and while a window is exhausted."
+            }
+          },
+          "additionalProperties": false,
+          "markdownDescription": "Glyphs used by `emoji` mode of `#claude-usage-monitor.statusBarIndicator#`, and by the `{dot}` format token in any mode. Any text works, not just emoji. Keep the glyphs the same width or the bar will shift as the level changes — the emoji-presentation shapes (\ud83d\udfe2 \ud83d\udfe1 \ud83d\udd34 \ud83d\udfe0 \u26a0\ufe0f) are all double-width."
+        },
         "claude-usage-monitor.burnRate": {
           "type": "boolean",
           "default": false,

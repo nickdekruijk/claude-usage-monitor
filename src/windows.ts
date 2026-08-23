@@ -228,15 +228,31 @@ function collapse(s: string): string {
 	return out.replace(/^[\s·/|,-]+/, '').replace(/[\s·/|,-]+$/, '');
 }
 
-export function renderTemplate(template: string, data: UsageData | null): string {
+export function renderTemplate(
+	template: string,
+	data: UsageData | null,
+	extra: Record<string, string> = {},
+): string {
 	const tokens = tokenValues(data);
 	const filled = template.replace(TOKEN_RE, (match, expr: string) => {
 		if (match === '{{') { return '{'; }
 		if (match === '}}') { return '}'; }
-		if (expr.trim().toLowerCase() === 'icon') { return '$(claude-icon)'; }
-		return tokens[expr.trim().toLowerCase()] ?? '';
+		const key = expr.trim().toLowerCase();
+		if (key === 'icon') { return '$(claude-icon)'; }
+		return extra[key] ?? tokens[key] ?? '';
 	});
 	return collapse(filled);
+}
+
+/** True when the template addresses `{name}`. An escaped `{{name}}` does not count. */
+export function hasToken(template: string, name: string): boolean {
+	const want = name.trim().toLowerCase();
+	const re = new RegExp(TOKEN_RE.source, 'g');
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(template)) !== null) {
+		if (m[1] !== undefined && m[1].trim().toLowerCase() === want) { return true; }
+	}
+	return false;
 }
 
 export interface Preset { id: string; label: string; template: string; }
@@ -310,4 +326,84 @@ export function colorPct(data: UsageData, sources: string[]): number {
 	// the default pair rather than leaving the bar permanently uncoloured.
 	const fallback = allWindows(data).filter((w) => w.key === '5h' || w.key === '7d');
 	return fallback.length > 0 ? Math.max(...fallback.map((w) => w.pct)) : 0;
+}
+
+/* ── Status bar indicator ─────────────────────────────────────────────────
+ * VS Code only lets an extension set two backgrounds — statusBarItem.warning-
+ * Background and .errorBackground — and picks the matching foreground itself,
+ * so a theme with a bright warning background and a pale warning foreground
+ * leaves our text unreadable and we cannot override it. Dropping the
+ * background is what buys back control: then `item.color` is ours, and a
+ * glyph in the text carries colour without touching the item's own colours.
+ */
+
+export type Level = 'normal' | 'warning' | 'error';
+export type IndicatorMode = 'background' | 'text' | 'emoji' | 'none';
+
+export interface IndicatorConfig {
+	mode:   IndicatorMode;
+	colors: Record<Level, string>;
+	emoji:  Record<Level, string>;
+	warnT:  number;
+	errT:   number;
+}
+
+const MODES: readonly IndicatorMode[] = ['background', 'text', 'emoji', 'none'];
+
+export const DEFAULT_COLORS: Record<Level, string> = {
+	normal:  '',
+	warning: 'editorWarning.foreground',
+	error:   'editorError.foreground',
+};
+
+export const DEFAULT_EMOJI: Record<Level, string> = {
+	normal:  '',
+	warning: '🟡',
+	error:   '🔴',
+};
+
+/** Glyphs for the tooltip legend, where a green dot reads as a scale, not noise. */
+export const TOOLTIP_EMOJI: Record<Level, string> = {
+	normal:  '🟢',
+	warning: '🟡',
+	error:   '🔴',
+};
+
+/**
+ * Per-level map from a settings object. VS Code hands back the user's object
+ * without guaranteeing every key, so each level falls back on its own.
+ */
+function readLevelMap(key: string, fallback: Record<Level, string>): Record<Level, string> {
+	const raw = vscode.workspace
+		.getConfiguration('claude-usage-monitor')
+		.get<Record<string, unknown>>(key) ?? {};
+	const pick = (l: Level) => (typeof raw[l] === 'string' ? (raw[l] as string) : fallback[l]);
+	return { normal: pick('normal'), warning: pick('warning'), error: pick('error') };
+}
+
+export function readIndicatorConfig(): IndicatorConfig {
+	const cfg  = vscode.workspace.getConfiguration('claude-usage-monitor');
+	const mode = (cfg.get<string>('statusBarIndicator', 'background') || 'background') as IndicatorMode;
+	return {
+		mode:   MODES.includes(mode) ? mode : 'background',
+		colors: readLevelMap('statusBarColors', DEFAULT_COLORS),
+		emoji:  readLevelMap('statusBarEmoji', DEFAULT_EMOJI),
+		warnT:  cfg.get<number>('warningThreshold', 60),
+		errT:   cfg.get<number>('errorThreshold', 80),
+	};
+}
+
+export function levelOf(pct: number, warnT: number, errT: number): Level {
+	if (pct >= errT)  { return 'error'; }
+	if (pct >= warnT) { return 'warning'; }
+	return 'normal';
+}
+
+/**
+ * The template to actually render. In emoji mode a format that never mentions
+ * `{dot}` still gets one, appended — otherwise switching to emoji would leave
+ * anyone with a custom format without any indicator at all.
+ */
+export function templateWithDot(format: string, mode: IndicatorMode): string {
+	return mode === 'emoji' && !hasToken(format, 'dot') ? `${format} {dot}` : format;
 }

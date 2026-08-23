@@ -12,12 +12,17 @@ import {
 } from "./history";
 import {
   allWindows,
+  colorPct,
+  Level,
+  levelOf,
   limitLabel,
   presets,
   readColorSources,
+  readIndicatorConfig,
   readStatusBarFormat,
   renderTemplate,
   sortLimits,
+  templateWithDot,
   tokenValues,
 } from "./windows";
 
@@ -234,6 +239,37 @@ function statusTextToHtml(text: string): string {
     .replace(/\$\(warning\)/g, "⚠");
 }
 
+/**
+ * `background` mode paints with VS Code's own status bar tokens, and an
+ * extension cannot override them for its item alone — the editor resolves them
+ * from the theme. Editing them means editing `workbench.colorCustomizations`,
+ * which is global: every extension's status bar item follows.
+ */
+export const THEME_COLOR_KEYS = [
+  { id: "statusBarItem.warningBackground", label: "Warning background", eg: "#7A6400" },
+  { id: "statusBarItem.warningForeground", label: "Warning text",       eg: "#FFFFFF" },
+  { id: "statusBarItem.errorBackground",   label: "Error background",   eg: "#5A1D1D" },
+  { id: "statusBarItem.errorForeground",   label: "Error text",         eg: "#FFFFFF" },
+] as const;
+
+function readThemeColors(): Record<string, string> {
+  const custom = vscode.workspace
+    .getConfiguration()
+    .get<Record<string, unknown>>("workbench.colorCustomizations") ?? {};
+  const out: Record<string, string> = {};
+  for (const k of THEME_COLOR_KEYS) {
+    out[k.id] = typeof custom[k.id] === "string" ? (custom[k.id] as string) : "";
+  }
+  return out;
+}
+
+/** Swatches for the settings rows — the panel's own legend, not the user's glyphs. */
+const LEVEL_DOT: Record<Level, string> = {
+  normal:  "#4ec9b0",
+  warning: "#ffd93d",
+  error:   "#ff6b6b",
+};
+
 function readPanelConfig() {
   const cfg = vscode.workspace.getConfiguration('claude-usage-monitor');
   return {
@@ -345,8 +381,52 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
 
   const sel = (val: string, opt: string) => val === opt ? ' selected' : '';
 
+  /**
+   * The four VS Code tokens behind `background` mode. A hex swatch and a text
+   * field edit the same value; the field also takes an empty string, which is
+   * the only way to hand the colour back to the theme.
+   */
+  const themeColorFields = () => THEME_COLOR_KEYS.map((k) => `
+		<div class="setting-row">
+			<span class="setting-label">${k.label}</span>
+			<div class="color-pair">
+				<input type="color" class="swatch" aria-label="${k.label} picker"
+					value="${/^#[0-9a-fA-F]{6}$/.test(themeColors[k.id]) ? themeColors[k.id] : k.eg}"
+					oninput="mirrorSwatch(this, 'tc-${k.id}')" onchange="syncSwatch(this, 'tc-${k.id}')">
+				<input type="text" class="setting-input wide" spellcheck="false"
+					id="tc-${k.id}" value="${escapeHtml(themeColors[k.id])}" placeholder="${k.eg} (theme default)"
+					onchange="updateThemeColor('${k.id}', this.value)">
+			</div>
+		</div>`).join("");
+
+  /**
+   * The normal/warning/error trio, shared by the colour and emoji editors. The
+   * colour rows get a picker too, but the text field stays the source of truth:
+   * a picker can only say hex, and these fields also take theme colour ids and
+   * the empty string.
+   */
+  const levelFields = (kind: 'color' | 'emoji', values: Record<Level, string>, placeholder: string) =>
+    (['normal', 'warning', 'error'] as Level[]).map((l) => `
+		<div class="setting-row">
+			<span class="setting-label"><span class="color-dot" style="background:${LEVEL_DOT[l]}"></span>${l[0].toUpperCase()}${l.slice(1)}</span>
+			<div class="color-pair">
+				${kind === 'color' ? `<input type="color" class="swatch" aria-label="${l} colour picker"
+					value="${/^#[0-9a-fA-F]{6}$/.test(values[l]) ? values[l] : LEVEL_DOT[l]}"
+					oninput="mirrorSwatch(this, 'ind-color-${l}')" onchange="syncLevelSwatch(this, 'ind-color-${l}')">` : ''}
+				<input type="text" class="setting-input wide" spellcheck="false"
+					id="ind-${kind}-${l}" value="${escapeHtml(values[l])}" placeholder="${escapeHtml(placeholder)}"
+					${kind === 'emoji' ? 'oninput="previewDot(this)" ' : ''}onchange="updateLevelMap('${kind}')">
+			</div>
+		</div>`).join("");
+
   const format       = readStatusBarFormat();
+  const ind          = readIndicatorConfig();
+  const themeColors  = readThemeColors();
   const colorSources = readColorSources().map((s) => s.toLowerCase());
+  // The preview shows the glyph for the level the account is actually at, so
+  // switching to emoji mode shows what the bar will really look like.
+  const level: Level = data ? levelOf(colorPct(data, colorSources), ind.warnT, ind.errT) : "normal";
+  const dot          = ind.emoji[level] ?? "";
   const windows      = data ? allWindows(data) : [];
   const colorAll     = colorSources.some((s) => s === "*" || s === "max-all");
 
@@ -367,7 +447,7 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
 		<div class="settings-group-title">Status Bar</div>
 		<div class="setting-row">
 			<span class="setting-label">Preview</span>
-			<span class="sb-preview" id="sb-preview">${data ? statusTextToHtml(renderTemplate(format, data)) : "—"}</span>
+			<span class="sb-preview" id="sb-preview">${data ? statusTextToHtml(renderTemplate(templateWithDot(format, ind.mode), data, { dot })) : "—"}</span>
 		</div>
 		<div class="setting-stack">
 			<span class="setting-label">Display <span class="info-icon" title="Pick a preset, or edit the format below to build your own.">ⓘ</span></span>
@@ -378,22 +458,47 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
 			<input type="text" class="format-input" id="sb-format" spellcheck="false" value="${escapeHtml(format)}"
 				oninput="previewFormat(this.value)"
 				onchange="updateSetting('claude-usage-monitor.statusBarFormat', this.value)">
-			<div class="hint">Windows ${escapeHtml(windowKeys)} · fields <code>.pct .reset .resetAt .name .bar</code> · plus <code>{icon}</code></div>
+			<div class="hint">Windows ${escapeHtml(windowKeys)} · fields <code>.pct .reset .resetAt .name .bar</code> · plus <code>{icon}</code> and <code>{dot}</code></div>
 		</div>
 	</div>
 
 	<div class="settings-group">
-		<div class="settings-group-title">Status Bar Color</div>
+		<div class="settings-group-title">Status Bar Indicator</div>
+		<div class="setting-row">
+			<span class="setting-label">Style <span class="info-icon" title="How the bar signals a crossed threshold. VS Code allows extensions only two background colors and picks the text color to match them, so on some themes 'Background' is hard to read — 'Text' and 'Emoji' stay legible on every theme.">ⓘ</span></span>
+			<select class="setting-control" id="ind-mode" onchange="setIndicatorMode(this.value)">
+				<option value="background"${sel(ind.mode, 'background')}>Background color</option>
+				<option value="text"${sel(ind.mode, 'text')}>Text color</option>
+				<option value="emoji"${sel(ind.mode, 'emoji')}>Emoji</option>
+				<option value="none"${sel(ind.mode, 'none')}>None</option>
+			</select>
+		</div>
+
+		<div class="setting-stack" id="ind-background"${ind.mode === 'background' ? '' : ' hidden'}>
+			${themeColorFields()}
+			<div class="hint"><strong>These are VS Code's own colors, not this extension's.</strong> They are written to <code>workbench.colorCustomizations</code> and apply to <em>every</em> extension's status bar item — VS Code resolves them itself and gives no way to scope them to one item. Use 6-digit hex; empty restores the theme's own color. Prefer <em>Text color</em> or <em>Emoji</em> above if you only want to change this extension.</div>
+		</div>
+
+		<div class="setting-stack" id="ind-colors"${ind.mode === 'text' ? '' : ' hidden'}>
+			${levelFields('color', ind.colors, 'e.g. #e5c100')}
+			<div class="hint">A theme color id such as <code>editorWarning.foreground</code> or <code>charts.red</code> follows light/dark themes; a literal <code>#e5c100</code> does not. Empty keeps the status bar's own color.</div>
+		</div>
+
+		<div class="setting-stack" id="ind-emoji"${ind.mode === 'emoji' ? '' : ' hidden'}>
+			${levelFields('emoji', ind.emoji, 'none')}
+			<div class="hint">Appended to the bar, or placed yourself with the <code>{dot}</code> token — which works in every style, so you can pair a glyph with a background. Keep the widths equal or the bar shifts as the level changes.</div>
+		</div>
+
 		<div class="setting-stack" id="color-sources">
 			${colorBoxes || '<div class="hint">No windows reported yet.</div>'}
-			<div class="hint">Turns orange/red when the highest checked window crosses a threshold below.</div>
+			<div class="hint">The indicator follows the highest checked window as it crosses the thresholds below.</div>
 		</div>
 	</div>
 
 	<div class="settings-group">
-		<div class="settings-group-title">Color Thresholds</div>
+		<div class="settings-group-title">Thresholds</div>
 		<div class="setting-row">
-			<span class="setting-label"><span class="color-dot" style="background:#ffd93d"></span>Warning <span class="info-icon" title="When usage reaches this percentage, the status bar turns orange.">ⓘ</span></span>
+			<span class="setting-label"><span class="color-dot" style="background:#ffd93d"></span>Warning <span class="info-icon" title="When usage reaches this percentage, the status bar shows the warning indicator.">ⓘ</span></span>
 			<div class="threshold-wrap">
 				<input type="number" class="setting-input" min="1" max="99" value="${warnT}"
 					onchange="updateSetting('claude-usage-monitor.warningThreshold', Number(this.value))">
@@ -401,7 +506,7 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
 			</div>
 		</div>
 		<div class="setting-row">
-			<span class="setting-label"><span class="color-dot" style="background:#ff6b6b"></span>Error <span class="info-icon" title="When usage reaches this percentage, the status bar turns red.">ⓘ</span></span>
+			<span class="setting-label"><span class="color-dot" style="background:#ff6b6b"></span>Error <span class="info-icon" title="When usage reaches this percentage, the status bar shows the error indicator.">ⓘ</span></span>
 			<div class="threshold-wrap">
 				<input type="number" class="setting-input" min="1" max="100" value="${errT}"
 					onchange="updateSetting('claude-usage-monitor.errorThreshold', Number(this.value))">
@@ -433,7 +538,7 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
     bucketsHtml,
     extraHtml: extraSection,
     settingsHtml,
-    tokens: tokenValues(data),
+    tokens: { ...tokenValues(data), dot },
   };
 }
 
@@ -650,7 +755,22 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	outline: none;
 }
 .setting-input:focus { border-color: var(--vscode-focusBorder); }
+.setting-input.invalid { border-color: var(--vscode-inputValidation-errorBorder, #be1100); }
+.setting-input.wide { width: 150px; text-align: left; }
+.color-pair { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+.swatch {
+	width: 26px;
+	height: 22px;
+	padding: 0;
+	border: 1px solid var(--vscode-input-border, #3c3c3c);
+	border-radius: 2px;
+	background: none;
+	cursor: pointer;
+}
+.setting-input::placeholder { color: var(--vscode-input-placeholderForeground, #888); opacity: 0.7; }
 .setting-stack { display: flex; flex-direction: column; gap: 6px; padding: 7px 0; }
+/* An author display rule outranks the UA sheet, so [hidden] needs saying again. */
+.setting-stack[hidden] { display: none; }
 .hint { font-size: 11px; color: var(--vscode-descriptionForeground); line-height: 1.5; }
 .hint code {
 	font-family: var(--vscode-editor-font-family, monospace);
@@ -759,6 +879,11 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 	// Same substitution the extension does, over the token values it sent, so
 	// the preview cannot drift from what the status bar will actually render.
 	function renderPreview(tpl) {
+		// Mirrors templateWithDot(): in emoji mode a format with no {dot} gets one.
+		var modeEl = document.getElementById('ind-mode');
+		if (modeEl && modeEl.value === 'emoji' && !/\{\s*dot\s*\}/i.test(String(tpl))) {
+			tpl = String(tpl) + ' {dot}';
+		}
 		var filled = String(tpl).replace(/\\{\\{|\\}\\}|\\{([^{}]*)\\}/g, function (m, expr) {
 			if (m === '{{') { return '{'; }
 			if (m === '}}') { return '}'; }
@@ -795,6 +920,79 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 		var chips = document.querySelectorAll('.chip');
 		for (var i = 0; i < chips.length; i++) { chips[i].classList.toggle('active', chips[i] === btn); }
 		updateSetting('claude-usage-monitor.statusBarFormat', tpl);
+	}
+
+	// Switch the visible editor immediately. The extension re-sends the whole
+	// settings fragment when the write lands, but not while focus is still in
+	// the panel — and after picking from a dropdown, it is.
+	function setIndicatorMode(mode) {
+		var back   = document.getElementById('ind-background');
+		var colors = document.getElementById('ind-colors');
+		var emoji  = document.getElementById('ind-emoji');
+		if (back)   { back.hidden   = mode !== 'background'; }
+		if (colors) { colors.hidden = mode !== 'text'; }
+		if (emoji)  { emoji.hidden  = mode !== 'emoji'; }
+		refreshPreview();
+		updateSetting('claude-usage-monitor.statusBarIndicator', mode);
+	}
+
+	// Object settings are written whole, so all three levels go together.
+	function updateLevelMap(kind) {
+		var levels = ['normal', 'warning', 'error'];
+		var out = {};
+		for (var i = 0; i < levels.length; i++) {
+			var el = document.getElementById('ind-' + kind + '-' + levels[i]);
+			out[levels[i]] = el ? el.value : '';
+		}
+		updateSetting(
+			kind === 'emoji' ? 'claude-usage-monitor.statusBarEmoji' : 'claude-usage-monitor.statusBarColors',
+			out
+		);
+	}
+
+	// A colour picker fires input on every movement inside the dialog, so the
+	// field mirrors continuously and only the committed value is written.
+	function mirrorSwatch(picker, fieldId) {
+		var field = document.getElementById(fieldId);
+		if (field) { field.value = picker.value; field.classList.remove('invalid'); }
+	}
+
+	function syncSwatch(picker, fieldId) {
+		mirrorSwatch(picker, fieldId);
+		updateThemeColor(fieldId.slice('tc-'.length), picker.value);
+	}
+
+	// Same picker, but these three write one object setting of our own.
+	function syncLevelSwatch(picker, fieldId) {
+		mirrorSwatch(picker, fieldId);
+		updateLevelMap('color');
+	}
+
+	function updateThemeColor(id, value) {
+		var v = String(value).trim();
+		if (v && !/^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/.test(v)) {
+			// Anything else lands in settings.json as an invalid colour and is
+			// silently ignored by VS Code, which looks like a broken control.
+			var field = document.getElementById('tc-' + id);
+			if (field) { field.classList.add('invalid'); }
+			return;
+		}
+		var field2 = document.getElementById('tc-' + id);
+		if (field2) { field2.classList.remove('invalid'); }
+		var patch = {};
+		patch[id] = v;
+		vscode.postMessage({ command: 'updateThemeColors', patch: patch });
+	}
+
+	// Typing a glyph updates the preview before the setting is committed.
+	function previewDot(input) {
+		TOKENS.dot = input.value;
+		refreshPreview();
+	}
+
+	function refreshPreview() {
+		var fmt = document.getElementById('sb-format');
+		previewFormat(fmt ? fmt.value : '');
 	}
 
 	function updateColorSources() {
@@ -872,6 +1070,31 @@ hr { border: none; border-top: 1px solid var(--vscode-panel-border); margin: 16p
 </html>`;
 }
 
+/**
+ * Merge a patch into `workbench.colorCustomizations`, touching only the keys
+ * this panel owns. An empty value deletes its key rather than writing "" —
+ * that is what restores the theme's own colour.
+ */
+async function writeThemeColors(patch: Record<string, unknown>) {
+  const owned = new Set<string>(THEME_COLOR_KEYS.map((k) => k.id));
+  const cfg   = vscode.workspace.getConfiguration();
+  // get() returns the merged value; writing that back to Global would copy any
+  // workspace-level entries into user settings. Extend the global object only.
+  const base  = cfg.inspect<Record<string, unknown>>("workbench.colorCustomizations")?.globalValue ?? {};
+  const next  = { ...base };
+
+  let touched = false;
+  for (const [id, value] of Object.entries(patch)) {
+    if (!owned.has(id) || typeof value !== "string") { continue; }
+    const v = value.trim();
+    if (v) { next[id] = v; } else { delete next[id]; }
+    touched = true;
+  }
+  if (!touched) { return; }
+
+  await cfg.update("workbench.colorCustomizations", next, vscode.ConfigurationTarget.Global);
+}
+
 export class UsagePanel {
   private panel: vscode.WebviewPanel | undefined;
   private lastData: UsageData | null = null;
@@ -880,7 +1103,8 @@ export class UsagePanel {
 
   constructor(private extensionUri: vscode.Uri, private memento: vscode.Memento) {
     this.configSub = vscode.workspace.onDidChangeConfiguration((e) => {
-      if (e.affectsConfiguration('claude-usage-monitor')) { this.post(); }
+      if (e.affectsConfiguration('claude-usage-monitor')
+        || e.affectsConfiguration('workbench.colorCustomizations')) { this.post(); }
     });
   }
 
@@ -923,6 +1147,8 @@ export class UsagePanel {
         await vscode.workspace.getConfiguration().update(
           msg.key, msg.value, vscode.ConfigurationTarget.Global
         );
+      } else if (msg.command === 'updateThemeColors') {
+        await writeThemeColors(msg.patch ?? {});
       }
     });
     this.panel.webview.html = buildShell();
