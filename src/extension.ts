@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { fetchUsageData } from './usageClient';
+import { fetchUsageData, UsageHttpError } from './usageClient';
 import { StatusBarManager } from './statusBar';
 import { UsagePanel } from './sessionPopover';
 import { maybeNotify } from './notifications';
@@ -39,6 +39,12 @@ interface CacheEntry {
 	data:      UsageData | null;
 	error:     string | null;
 	fetchedAt: number; // Date.now()
+	/**
+	 * Epoch ms until which the API told us to stay away (`retry-after` on a
+	 * 429). Lives in the shared cache so every window honours one block
+	 * instead of each of them discovering it again.
+	 */
+	blockedUntil?: number;
 }
 
 function reviveCache(raw: CacheEntry | undefined): CacheEntry | null {
@@ -77,6 +83,7 @@ export function activate(context: vscode.ExtensionContext) {
 	let currentError: string | null    = null;
 	let errorCount    = 0;
 	let timer: ReturnType<typeof setTimeout> | null = null;
+	let blockedUntil = 0; // epoch ms, from the API's own retry-after
 	// Read the real state: onDidChangeWindowState only fires on a *change*, so a
 	// window that activates unfocused would otherwise poll forever believing it
 	// is focused. On a machine with several windows open that multiplies every
@@ -101,11 +108,15 @@ export function activate(context: vscode.ExtensionContext) {
 	function scheduleNext() {
 		if (!windowFocused) { return; } // don't poll in background
 
-		// Back off after errors, but never poll faster than the configured interval.
+		// A 429 comes with the exact time to wait. Retrying earlier keeps the
+		// rate limit window saturated, so the block never lifts. Honour it over
+		// both the interval and the backoff.
 		const interval = pollIntervalMs();
-		const delay = errorCount === 0
+		const backoff = errorCount === 0
 			? interval
 			: Math.max(interval, BACKOFF_STEPS_MS[Math.min(errorCount - 1, BACKOFF_STEPS_MS.length - 1)]);
+		const untilUnblocked = blockedUntil - Date.now() + 1_000; // clear the boundary
+		const delay = Math.max(backoff, untilUnblocked);
 
 		timer = setTimeout(async () => {
 			await refresh();
@@ -114,8 +125,18 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	async function refresh() {
-		// Check global cache first — skip fetch if another window just did it
 		const cached = reviveCache(context.globalState.get<CacheEntry>(CACHE_KEY));
+
+		// Another window (or an earlier poll here) was told to back off. Calling
+		// anyway would count against the same account budget and keep the block
+		// alive, so show what we have and wait it out.
+		if (cached?.blockedUntil && cached.blockedUntil > Date.now()) {
+			blockedUntil = cached.blockedUntil;
+			applyState(cached.data, cached.error);
+			return;
+		}
+
+		// Skip the fetch if another window just did it
 		if (cached && (Date.now() - cached.fetchedAt) < cacheTtlMs()) {
 			errorCount = cached.error ? errorCount : 0;
 			applyState(cached.data, cached.error);
@@ -125,13 +146,17 @@ export function activate(context: vscode.ExtensionContext) {
 		try {
 			const data = await fetchUsageData();
 			errorCount = 0;
+			blockedUntil = 0;
 			const entry: CacheEntry = { data, error: null, fetchedAt: Date.now() };
 			await context.globalState.update(CACHE_KEY, entry);
 			applyState(data, null);
 		} catch (err) {
 			errorCount++;
 			const error = err instanceof Error ? err.message : String(err);
+			const retryAfterMs = err instanceof UsageHttpError ? err.retryAfterMs : null;
+			blockedUntil = retryAfterMs === null ? 0 : Date.now() + retryAfterMs;
 			const entry: CacheEntry = { data: null, error, fetchedAt: Date.now() };
+			if (blockedUntil > 0) { entry.blockedUntil = blockedUntil; }
 			await context.globalState.update(CACHE_KEY, entry);
 			applyState(null, error);
 			console.error('[Claude Usage Monitor]', error);
@@ -188,8 +213,11 @@ export function activate(context: vscode.ExtensionContext) {
 
 	const refreshCmd = vscode.commands.registerCommand('claude-usage-monitor.refresh', async () => {
 		if (timer) { clearTimeout(timer); timer = null; }
-		// Force a real fetch by clearing the cache
-		await context.globalState.update(CACHE_KEY, undefined);
+		// Force a real fetch by clearing the cache, unless the API told us to
+		// wait: a manual retry during a block costs quota and extends nothing.
+		const cached = reviveCache(context.globalState.get<CacheEntry>(CACHE_KEY));
+		const stillBlocked = !!cached?.blockedUntil && cached.blockedUntil > Date.now();
+		if (!stillBlocked) { await context.globalState.update(CACHE_KEY, undefined); }
 		await refresh();
 		scheduleNext();
 	});

@@ -7,11 +7,44 @@ import { QuotaBucket, UsageData, UsageLimit } from './types';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 const BETA_HEADER = 'oauth-2025-04-20';
+/** Guard against a nonsense header locking the status bar for days. */
+const MAX_RETRY_AFTER_S = 6 * 60 * 60;
 
 interface Credentials {
 	claudeAiOauth?: {
 		accessToken?: string;
 	};
+}
+
+/**
+ * Carries the server's own `retry-after` so the caller can wait exactly as
+ * long as it is told. Polling before that point keeps the rate limit window
+ * saturated, which is how a single 429 turns into a permanent lockout.
+ */
+export class UsageHttpError extends Error {
+	constructor(
+		message: string,
+		readonly statusCode: number | undefined,
+		readonly retryAfterMs: number | null,
+	) {
+		super(message);
+		this.name = 'UsageHttpError';
+	}
+}
+
+/** `retry-after` is either a delta in seconds or an HTTP date. Both are valid. */
+function parseRetryAfter(raw: string | string[] | undefined): number | null {
+	if (typeof raw !== 'string' || !raw.trim()) { return null; }
+	const seconds = Number(raw.trim());
+	if (Number.isFinite(seconds)) {
+		if (seconds < 0) { return null; }
+		return Math.min(seconds, MAX_RETRY_AFTER_S) * 1000;
+	}
+	const at = Date.parse(raw);
+	if (Number.isNaN(at)) { return null; }
+	const ms = at - Date.now();
+	if (ms <= 0) { return null; }
+	return Math.min(ms, MAX_RETRY_AFTER_S * 1000);
 }
 
 /**
@@ -64,7 +97,11 @@ function httpsGet(url: string, headers: Record<string, string>): Promise<string>
 				if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
 					resolve(body);
 				} else {
-					reject(new Error(`HTTP ${res.statusCode}: ${body}`));
+					reject(new UsageHttpError(
+						`HTTP ${res.statusCode}: ${body}`,
+						res.statusCode,
+						parseRetryAfter(res.headers['retry-after']),
+					));
 				}
 			});
 		});
@@ -143,7 +180,11 @@ export async function fetchUsageData(): Promise<UsageData> {
 			throw new Error('HTTP 403 — Forbidden: Your account may not have access to the usage API. Fix: make sure you are logged in to Claude Code with a valid Pro/Max subscription.');
 		}
 		if (msg.includes('HTTP 429')) {
-			throw new Error('HTTP 429 — Rate limited by Anthropic API. The extension will retry automatically with backoff.');
+			const retryAfterMs = err instanceof UsageHttpError ? err.retryAfterMs : null;
+			const wait = retryAfterMs === null
+				? 'The extension will retry automatically with backoff.'
+				: `Retrying in ${Math.max(1, Math.round(retryAfterMs / 60000))} min, as the API asked.`;
+			throw new UsageHttpError(`HTTP 429 — Rate limited by Anthropic API. ${wait}`, 429, retryAfterMs);
 		}
 		if (msg.includes('timed out') || msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
 			throw new Error(`Network error: ${msg}. Fix: check your internet connection and try running "Claude: Refresh Usage".`);
