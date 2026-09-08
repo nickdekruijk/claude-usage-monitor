@@ -276,7 +276,7 @@ function readPanelConfig() {
     warnT:    cfg.get<number>('warningThreshold', 60),
     errT:     cfg.get<number>('errorThreshold', 80),
     clockFmt: cfg.get<string>('clockFormat', 'auto'),
-    refreshS: cfg.get<number>('refreshInterval', 300),
+    refreshS: cfg.get<number>('refreshInterval', 120),
   };
 }
 

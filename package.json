@@ -146,10 +146,10 @@
         },
         "claude-usage-monitor.refreshInterval": {
           "type": "number",
-          "default": 300,
+          "default": 120,
           "minimum": 60,
           "maximum": 3600,
-          "markdownDescription": "How often to poll the usage API, in seconds (default 300, minimum 60). Polling only happens while a VS Code window is focused, and all windows share one cache so the interval applies per machine, not per window. Raise this if you see `HTTP 429 — Rate limited` in the status bar: the usage endpoint has a small hourly budget per account."
+          "markdownDescription": "How often to poll the usage API, in seconds (default 120, minimum 60). Polling only happens while a VS Code window is focused, and all windows share one cache so the interval applies per machine, not per window. Raise this if you see `HTTP 429 — Rate limited` in the status bar: the usage endpoint has a small hourly budget per account."
         },
         "claude-usage-monitor.burnRate": {
           "type": "boolean",

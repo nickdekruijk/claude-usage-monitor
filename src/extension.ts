@@ -7,7 +7,7 @@ import { recordHistory } from './history';
 import { UsageData } from './types';
 
 const CONFIG_SECTION           = 'claude-usage-monitor';
-const DEFAULT_POLL_INTERVAL_S  = 300;
+const DEFAULT_POLL_INTERVAL_S  = 120;
 const MIN_POLL_INTERVAL_S      = 60;
 const MAX_POLL_INTERVAL_S      = 3600;
 // The cache is considered fresh for slightly less than one interval, so a
