@@ -32,6 +32,23 @@ export class UsageHttpError extends Error {
 	}
 }
 
+/**
+ * Marker in a 429 message naming when the extension will try again. The status
+ * bar and the panel rewrite these messages, and read it back with
+ * {@link retryAtFromMessage} so the wait survives that rewrite.
+ */
+export const RETRY_AT_PREFIX = 'Retry at ';
+
+function formatClock(at: Date): string {
+	return at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
+
+/** The clock time out of a 429 message, or null when the API did not say. */
+export function retryAtFromMessage(message: string): string | null {
+	const at = message.match(/Retry at ([^.]+)\./);
+	return at ? at[1] : null;
+}
+
 /** `retry-after` is either a delta in seconds or an HTTP date. Both are valid. */
 function parseRetryAfter(raw: string | string[] | undefined): number | null {
 	if (typeof raw !== 'string' || !raw.trim()) { return null; }
@@ -181,9 +198,11 @@ export async function fetchUsageData(): Promise<UsageData> {
 		}
 		if (msg.includes('HTTP 429')) {
 			const retryAfterMs = err instanceof UsageHttpError ? err.retryAfterMs : null;
+			// An absolute time, so the message stays true however long the
+			// error sits on screen. A relative one would age into a lie.
 			const wait = retryAfterMs === null
 				? 'The extension will retry automatically with backoff.'
-				: `Retrying in ${Math.max(1, Math.round(retryAfterMs / 60000))} min, as the API asked.`;
+				: `${RETRY_AT_PREFIX}${formatClock(new Date(Date.now() + retryAfterMs))}.`;
 			throw new UsageHttpError(`HTTP 429 — Rate limited by Anthropic API. ${wait}`, 429, retryAfterMs);
 		}
 		if (msg.includes('timed out') || msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {

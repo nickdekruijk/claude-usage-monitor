@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { UsageData, QuotaBucket, UsageLimit } from "./types";
+import { retryAtFromMessage } from "./usageClient";
 import {
   Burn,
   Store as HistoryStore,
@@ -60,9 +61,12 @@ function formatError(raw: string): { message: string; hint: string | null } {
     };
   }
   if (raw.includes('429')) {
+    const at = retryAtFromMessage(raw);
     return {
       message: 'HTTP 429 — Rate limited by Anthropic API.',
-      hint: 'The extension will retry automatically with backoff. No action needed.',
+      hint: at
+        ? `Waiting until <strong>${at}</strong>, as the API asked. Retrying sooner only keeps the limit full, so the panel will sit on the last reading until then.`
+        : 'The extension will retry automatically with backoff. No action needed.',
     };
   }
   if (raw.includes('timed out') || raw.includes('ECONNREFUSED') || raw.includes('ENOTFOUND')) {

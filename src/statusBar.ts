@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { retryAtFromMessage } from './usageClient';
 import { UsageData } from './types';
 import {
 	allWindows,
@@ -181,8 +182,11 @@ export class StatusBarManager {
 			displayMsg = 'HTTP 403 — Account lacks API access.';
 			hint = 'Fix: ensure you are logged in to Claude Code with a Pro or Max subscription.';
 		} else if (message.includes('429')) {
+			const at = retryAtFromMessage(message);
 			displayMsg = 'HTTP 429 — Rate limited.';
-			hint = 'The extension will retry automatically.';
+			hint = at
+				? `Waiting until ${at}, as the API asked. Retrying sooner only keeps the limit full.`
+				: 'The extension will retry automatically.';
 		} else if (message.includes('timed out') || message.includes('ECONNREFUSED') || message.includes('ENOTFOUND')) {
 			displayMsg = 'Network error — cannot reach api.anthropic.com.';
 			hint = 'Fix: check your internet connection, then Ctrl+Shift+P → Claude: Refresh Usage.';
