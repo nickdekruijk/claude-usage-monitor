@@ -6,13 +6,29 @@ import { maybeNotify } from './notifications';
 import { recordHistory } from './history';
 import { UsageData } from './types';
 
-const POLL_INTERVAL_MS = 2  * 60_000; // 2 minutes
-const CACHE_TTL_MS     = 115_000;     // treat cache as fresh if < ~2min old
+const CONFIG_SECTION           = 'claude-usage-monitor';
+const DEFAULT_POLL_INTERVAL_S  = 300;
+const MIN_POLL_INTERVAL_S      = 60;
+const MAX_POLL_INTERVAL_S      = 3600;
+// The cache is considered fresh for slightly less than one interval, so a
+// window whose timer fires a moment early still reuses the previous fetch.
+const CACHE_TTL_SLACK_MS       = 5_000;
 const BACKOFF_STEPS_MS = [
 	4  * 60_000,  // 1st error → wait 4 min
 	8  * 60_000,  // 2nd error → wait 8 min
 	16 * 60_000,  // 3rd+ error → wait 16 min
 ];
+
+/** Poll interval from settings, clamped to the documented range. */
+function pollIntervalMs(): number {
+	const raw = vscode.workspace.getConfiguration(CONFIG_SECTION).get<number>('refreshInterval');
+	const seconds = typeof raw === 'number' && Number.isFinite(raw) ? raw : DEFAULT_POLL_INTERVAL_S;
+	return Math.min(MAX_POLL_INTERVAL_S, Math.max(MIN_POLL_INTERVAL_S, seconds)) * 1000;
+}
+
+function cacheTtlMs(): number {
+	return pollIntervalMs() - CACHE_TTL_SLACK_MS;
+}
 
 // Versioned key: pre-1.3.0 builds wrote a UsageData without `limits` to the
 // unversioned key. Sharing a key across versions let an older co-installed
@@ -81,9 +97,11 @@ export function activate(context: vscode.ExtensionContext) {
 	function scheduleNext() {
 		if (!windowFocused) { return; } // don't poll in background
 
+		// Back off after errors, but never poll faster than the configured interval.
+		const interval = pollIntervalMs();
 		const delay = errorCount === 0
-			? POLL_INTERVAL_MS
-			: BACKOFF_STEPS_MS[Math.min(errorCount - 1, BACKOFF_STEPS_MS.length - 1)];
+			? interval
+			: Math.max(interval, BACKOFF_STEPS_MS[Math.min(errorCount - 1, BACKOFF_STEPS_MS.length - 1)]);
 
 		timer = setTimeout(async () => {
 			await refresh();
@@ -94,7 +112,7 @@ export function activate(context: vscode.ExtensionContext) {
 	async function refresh() {
 		// Check global cache first — skip fetch if another window just did it
 		const cached = reviveCache(context.globalState.get<CacheEntry>(CACHE_KEY));
-		if (cached && (Date.now() - cached.fetchedAt) < CACHE_TTL_MS) {
+		if (cached && (Date.now() - cached.fetchedAt) < cacheTtlMs()) {
 			errorCount = cached.error ? errorCount : 0;
 			applyState(cached.data, cached.error);
 			return;
@@ -121,11 +139,12 @@ export function activate(context: vscode.ExtensionContext) {
 	if (cached) {
 		applyState(cached.data, cached.error);
 		const age = Date.now() - cached.fetchedAt;
-		if (age < CACHE_TTL_MS) {
+		const ttl = cacheTtlMs();
+		if (age < ttl) {
 			// Cache is fresh — delay first fetch to fill remaining TTL
 			timer = setTimeout(() => {
 				refresh().then(() => scheduleNext());
-			}, CACHE_TTL_MS - age);
+			}, ttl - age);
 		} else {
 			refresh().then(() => scheduleNext());
 		}
@@ -150,6 +169,13 @@ export function activate(context: vscode.ExtensionContext) {
 		panel.show(currentData, currentError);
 	});
 
+	// Apply a changed interval without a reload: restart the timer from now.
+	const onConfig = vscode.workspace.onDidChangeConfiguration((event) => {
+		if (!event.affectsConfiguration(`${CONFIG_SECTION}.refreshInterval`)) { return; }
+		if (timer) { clearTimeout(timer); timer = null; }
+		scheduleNext();
+	});
+
 	const refreshCmd = vscode.commands.registerCommand('claude-usage-monitor.refresh', async () => {
 		if (timer) { clearTimeout(timer); timer = null; }
 		// Force a real fetch by clearing the cache
@@ -163,6 +189,7 @@ export function activate(context: vscode.ExtensionContext) {
 		statusBar,
 		panel,
 		onFocus,
+		onConfig,
 		showPopup,
 		refreshCmd,
 	);

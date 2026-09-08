@@ -276,6 +276,7 @@ function readPanelConfig() {
     warnT:    cfg.get<number>('warningThreshold', 60),
     errT:     cfg.get<number>('errorThreshold', 80),
     clockFmt: cfg.get<string>('clockFormat', 'auto'),
+    refreshS: cfg.get<number>('refreshInterval', 300),
   };
 }
 
@@ -297,7 +298,7 @@ interface PanelState {
  * user is mid-edit all survive a poll.
  */
 function buildFragments(data: UsageData | null, error: string | null, store: HistoryStore): PanelState {
-  const { warnT, errT, clockFmt } = readPanelConfig();
+  const { warnT, errT, clockFmt, refreshS } = readPanelConfig();
 
   // Burn rate per window, addressed by the same keys allWindows() uses.
   const burnByKey = new Map<string, string>();
@@ -528,6 +529,14 @@ function buildFragments(data: UsageData | null, error: string | null, store: His
 				<option value="12h"${sel(clockFmt, '12h')}>12-hour (7:44 PM)</option>
 				<option value="24h"${sel(clockFmt, '24h')}>24-hour (19:44)</option>
 			</select>
+		</div>
+		<div class="setting-row">
+			<span class="setting-label">Refresh interval <span class="info-icon" title="How often the usage API is polled, in seconds (minimum 60). Only while a VS Code window is focused; all windows share one cache. Raise this if the status bar shows HTTP 429: the usage endpoint has a small hourly budget per account.">ⓘ</span></span>
+			<div class="threshold-wrap">
+				<input type="number" class="setting-input" min="60" max="3600" step="30" value="${refreshS}"
+					onchange="updateSetting('claude-usage-monitor.refreshInterval', Number(this.value))">
+				<span class="threshold-pct">s</span>
+			</div>
 		</div>
 	</div>`;
 

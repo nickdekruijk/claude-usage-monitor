@@ -144,6 +144,13 @@
           "additionalProperties": false,
           "markdownDescription": "Glyphs used by `emoji` mode of `#claude-usage-monitor.statusBarIndicator#`, and by the `{dot}` format token in any mode. Any text works, not just emoji. Keep the glyphs the same width or the bar will shift as the level changes — the emoji-presentation shapes (\ud83d\udfe2 \ud83d\udfe1 \ud83d\udd34 \ud83d\udfe0 \u26a0\ufe0f) are all double-width."
         },
+        "claude-usage-monitor.refreshInterval": {
+          "type": "number",
+          "default": 300,
+          "minimum": 60,
+          "maximum": 3600,
+          "markdownDescription": "How often to poll the usage API, in seconds (default 300, minimum 60). Polling only happens while a VS Code window is focused, and all windows share one cache so the interval applies per machine, not per window. Raise this if you see `HTTP 429 — Rate limited` in the status bar: the usage endpoint has a small hourly budget per account."
+        },
         "claude-usage-monitor.burnRate": {
           "type": "boolean",
           "default": false,
