@@ -77,7 +77,11 @@ export function activate(context: vscode.ExtensionContext) {
 	let currentError: string | null    = null;
 	let errorCount    = 0;
 	let timer: ReturnType<typeof setTimeout> | null = null;
-	let windowFocused = true;
+	// Read the real state: onDidChangeWindowState only fires on a *change*, so a
+	// window that activates unfocused would otherwise poll forever believing it
+	// is focused. On a machine with several windows open that multiplies every
+	// poll, and the usage endpoint is rate limited per account.
+	let windowFocused = vscode.window.state.focused;
 
 	function applyState(data: UsageData | null, error: string | null) {
 		if (data) { currentData = data; } // keep last good data on error
@@ -134,11 +138,20 @@ export function activate(context: vscode.ExtensionContext) {
 		}
 	}
 
-	// On startup: show cached data immediately, then fetch if stale
+	// On startup: show whatever the shared cache holds immediately.
 	const cached = reviveCache(context.globalState.get<CacheEntry>(CACHE_KEY));
 	if (cached) {
 		applyState(cached.data, cached.error);
-		const age = Date.now() - cached.fetchedAt;
+	} else {
+		statusBar.showInitializing();
+	}
+
+	// Only a focused window fetches. Restoring a session opens every window at
+	// once; without this they would all fetch in the same instant, before any of
+	// them has written the shared cache the others check. An unfocused window
+	// stays idle until onDidChangeWindowState reports focus, which refreshes.
+	if (windowFocused) {
+		const age = cached ? Date.now() - cached.fetchedAt : Number.POSITIVE_INFINITY;
 		const ttl = cacheTtlMs();
 		if (age < ttl) {
 			// Cache is fresh — delay first fetch to fill remaining TTL
@@ -148,9 +161,6 @@ export function activate(context: vscode.ExtensionContext) {
 		} else {
 			refresh().then(() => scheduleNext());
 		}
-	} else {
-		statusBar.showInitializing();
-		refresh().then(() => scheduleNext());
 	}
 
 	const onFocus = vscode.window.onDidChangeWindowState((state) => {
