@@ -6,6 +6,7 @@ import { execSync } from 'child_process';
 import { QuotaBucket, UsageData, UsageLimit } from './types';
 
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
+const CLIENT_NAME = 'claude-usage-monitor';
 const BETA_HEADER = 'oauth-2025-04-20';
 /** Guard against a nonsense header locking the status bar for days. */
 const MAX_RETRY_AFTER_S = 6 * 60 * 60;
@@ -30,6 +31,19 @@ export class UsageHttpError extends Error {
 		super(message);
 		this.name = 'UsageHttpError';
 	}
+}
+
+/**
+ * Node sends no User-Agent of its own, and an unidentified caller appears to
+ * land in a much tighter rate limit bucket on this endpoint. Name ourselves
+ * honestly: this is not Claude Code and must not pretend to be.
+ */
+let userAgent = CLIENT_NAME;
+
+/** Called once at activation with the version from the extension manifest. */
+export function setUserAgent(version: string): void {
+	const clean = version.trim();
+	userAgent = clean ? `${CLIENT_NAME}/${clean}` : CLIENT_NAME;
 }
 
 /**
@@ -187,6 +201,7 @@ export async function fetchUsageData(): Promise<UsageData> {
 			'Authorization': `Bearer ${token}`,
 			'Content-Type': 'application/json',
 			'anthropic-beta': BETA_HEADER,
+			'User-Agent': userAgent,
 		});
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

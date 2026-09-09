@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { fetchUsageData, UsageHttpError } from './usageClient';
+import { fetchUsageData, setUserAgent, UsageHttpError } from './usageClient';
 import { StatusBarManager } from './statusBar';
 import { UsagePanel } from './sessionPopover';
 import { maybeNotify } from './notifications';
@@ -74,6 +74,7 @@ function dropLegacyKeys(memento: vscode.Memento) {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+	setUserAgent(String(context.extension.packageJSON?.version ?? ''));
 	dropLegacyKeys(context.globalState);
 
 	const statusBar = new StatusBarManager();
